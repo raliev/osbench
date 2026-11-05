@@ -10,14 +10,20 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, Response
 
+from .explore import Explorer
 from .loader import ReplayData
 
 _STATIC = Path(__file__).parent / "static"
 _LIVE_STATIC = Path(__file__).parent.parent / "live" / "static"
 
 
+def _opt_int(v: str | None) -> int | None:
+    return int(v) if v not in (None, "") else None
+
+
 def build_app(data: ReplayData) -> FastAPI:
     app = FastAPI()
+    ex = Explorer(data)
 
     @app.get("/")
     def index() -> HTMLResponse:
@@ -50,7 +56,42 @@ def build_app(data: ReplayData) -> FastAPI:
 
     @app.get("/api/warehouse/{wh}")
     def warehouse(wh: int, day: int = 0) -> Response:
-        return Response(orjson.dumps(data.warehouse_detail(wh, day)))
+        return Response(orjson.dumps(ex.warehouse_detail(wh, day)))
+
+    @app.get("/api/products")
+    def products(day: int = 0, q: str = "", category: str = "", stocked: str = "",
+                 sort: str = "sku", desc: bool = False, offset: int = 0, limit: int = 50) -> Response:
+        return Response(orjson.dumps(ex.products(day, q, _opt_int(category), stocked, sort, desc,
+                                                 offset, limit)))
+
+    @app.get("/api/product/{sku}")
+    def product(sku: int) -> Response:
+        return Response(orjson.dumps(ex.product_detail(sku)))
+
+    @app.get("/api/warehouses")
+    def warehouses(day: int = 0, offset: int = 0, limit: int = 50) -> Response:
+        return Response(orjson.dumps(ex.warehouses(day, offset, limit)))
+
+    @app.get("/api/sales")
+    def sales(day_from: str = "", day_to: str = "") -> Response:
+        return Response(orjson.dumps(ex.sales(_opt_int(day_from), _opt_int(day_to))))
+
+    @app.get("/api/sales/skus")
+    def sales_skus(day_from: str = "", day_to: str = "", q: str = "", category: str = "",
+                   sort: str = "revenue", desc: bool = True, offset: int = 0,
+                   limit: int = 50) -> Response:
+        return Response(orjson.dumps(ex.sales_skus(_opt_int(day_from), _opt_int(day_to), q,
+                                                   _opt_int(category), sort, desc, offset, limit)))
+
+    @app.get("/api/orders")
+    def orders(order_id: str = "", day_from: str = "", day_to: str = "", status: str = "",
+               wh: str = "", region: str = "", split: str = "", sku: str = "",
+               min_lines: str = "", sort: str = "order_id", desc: bool = False,
+               offset: int = 0, limit: int = 50) -> Response:
+        return Response(orjson.dumps(ex.orders(
+            _opt_int(order_id), _opt_int(day_from), _opt_int(day_to), status, _opt_int(wh),
+            _opt_int(region), split, _opt_int(sku), _opt_int(min_lines), sort, desc,
+            offset, limit)))
 
     @app.get("/api/sku/{sku}")
     def sku(sku: int) -> Response:

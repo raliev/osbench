@@ -205,3 +205,23 @@ def test_analysis_endpoint(client):
         time.sleep(0.3)
     a = client.get("/api/analysis?run=" + st["run_dir"]).json()
     assert a["days"] and {"created", "delivered", "on_time_rate", "shipping"} <= set(a["series"])
+
+
+@pytest.mark.fast
+def test_generate_then_run_over_generated(client):
+    r = client.post("/api/run", content=orjson.dumps(
+        {"config": "tiny", "sourcing": "nearest", "seed": 0, "run_name": "gen_only",
+         "mode": "generate"})).json()
+    s = _await_done(client, r["run_id"])
+    assert s["status"] == "done" and s["run_dir"] is None
+    gens = client.get("/api/generations").json()
+    assert gens[0]["name"] == "gen_only" and gens[0]["runs"] == []
+    r2 = client.post("/api/run", content=orjson.dumps(
+        {"config": "tiny", "sourcing": "nearest", "seed": 0, "run_name": "gen_only",
+         "mode": "run"})).json()
+    s2 = _await_done(client, r2["run_id"])
+    assert s2["status"] == "done" and s2["run_dir"].endswith("nearest")
+    assert client.get("/api/generations").json()[0]["runs"] == ["nearest"]
+    missing = client.post("/api/run", content=orjson.dumps(
+        {"config": "tiny", "sourcing": "nearest", "run_name": "nope", "mode": "run"})).json()
+    assert "error" in missing

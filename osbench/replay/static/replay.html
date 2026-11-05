@@ -31,10 +31,41 @@ th{color:var(--muted)}
 .sumcard .v{font-size:16px;font-weight:700}.sumcard .k{color:var(--muted);font-size:11px}
 .hint{color:var(--muted);padding:6px}
 .right{max-height:calc(100vh - 110px);overflow:auto}
+.tabs{display:flex;gap:4px;margin-left:8px}
+.tab{padding:5px 14px;border:1px solid var(--line);border-radius:6px;cursor:pointer;background:#12161d;color:var(--muted)}
+.tab.active{background:var(--accent);color:#fff;font-weight:600;border-color:var(--accent)}
+.pane{display:none}.pane.active{display:block}
+.wrap2{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:10px;padding:10px;align-items:start}
+.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:2px 4px 8px}
+.toolbar input,.toolbar select{background:#21262d;color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:3px 6px}
+.toolbar input[type=number]{width:80px}
+.toolbar label{color:var(--muted);font-size:12px;display:inline-flex;align-items:center;gap:3px}
+button.ghost{background:#21262d;border:1px solid var(--line);color:var(--fg)}
+button.sm{padding:3px 9px;font-size:12px}
+.pager{display:flex;align-items:center;gap:8px;margin:8px 4px;color:var(--muted);font-size:12px}
+tr.row{cursor:pointer}tr.row:hover{background:#12161d}tr.row.sel{background:#17202e}
+th.sortable{cursor:pointer;user-select:none}th.sortable:hover{color:var(--fg)}
+td.num,th.num{text-align:right}
+.zero{color:#f85149}
+.whgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.whcard{border:1px solid var(--line);border-radius:6px;padding:4px 6px}
+.whcard .chart{height:170px}
+.note{color:#d29922;font-size:11px;margin:2px 6px}
+.salesgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 10px}
+.salesgrid .chart{height:260px}
+.sumcard.pos .v{color:#3fb950}.sumcard.neg .v{color:#f85149}
+.sumcard .s{color:var(--muted);font-size:10px}
 </style></head>
 <body>
 <header>
   <span class="title">osbench inspector</span>
+  <div class="tabs">
+    <span class="tab active" data-tab="map">Map</span>
+    <span class="tab" data-tab="products">Products</span>
+    <span class="tab" data-tab="warehouses">Warehouses</span>
+    <span class="tab" data-tab="orders">Orders</span>
+    <span class="tab" data-tab="sales">Sales</span>
+  </div>
   <span class="muted">day <b id="day-label">0</b> / <span id="day-max">0</span></span>
   <span class="muted">orders this day: <b id="n-orders">0</b></span>
   <span class="muted" id="detail-note"></span>
@@ -53,6 +84,7 @@ th{color:var(--muted)}
   <input type="number" id="order-input" placeholder="order_id" min="0">
   <button id="order-btn">Open</button>
 </div>
+<div class="pane active" id="pane-map">
 <div id="map-legend" class="muted" style="font-size:11px;padding:2px 12px 6px;min-height:14px"></div>
 <div class="wrap">
   <div class="panel"><h3>Network map — click an order point or a warehouse</h3>
@@ -62,6 +94,97 @@ th{color:var(--muted)}
     <div class="panel" id="p-order"><h3>Order</h3><div class="hint">Click an order point on the map (or type an id above).</div></div>
     <div class="panel" id="p-wh" style="display:none"><h3>Warehouse</h3><div id="wh-body"></div></div>
     <div class="panel" id="p-sku" style="display:none"><h3>SKU</h3><div id="sku-body"></div></div>
+  </div>
+</div>
+</div>
+
+<!-- ============================ PRODUCTS ============================ -->
+<div class="pane" id="pane-products"><div class="wrap2">
+  <div class="panel"><h3>Products — availability at day <span class="cur-day">0</span></h3>
+    <div class="toolbar">
+      <input id="pr-q" placeholder="SKU id(s)" style="width:110px">
+      <select id="pr-cat"><option value="">all categories</option></select>
+      <select id="pr-stocked"><option value="">all</option><option value="in">ATP &gt; 0</option><option value="out">out of stock</option></select>
+      <label>per page <select id="pr-limit"><option>25</option><option selected>50</option><option>100</option><option>200</option></select></label>
+    </div>
+    <div id="pr-note" class="note"></div>
+    <div id="pr-table"></div>
+    <div class="pager" id="pr-pager"></div>
+  </div>
+  <div class="right"><div class="panel" id="p-product"><h3>Product</h3><div class="hint">Click a product in the list.</div></div></div>
+</div></div>
+
+<!-- ============================ WAREHOUSES ============================ -->
+<div class="pane" id="pane-warehouses"><div class="wrap2">
+  <div class="panel"><h3>Warehouses — stock at day <span class="cur-day">0</span></h3>
+    <div class="toolbar"><label>per page <select id="wl-limit"><option>10</option><option selected>25</option><option>50</option></select></label></div>
+    <div id="wl-note" class="note"></div>
+    <div id="wl-table"></div>
+    <div class="pager" id="wl-pager"></div>
+  </div>
+  <div class="right"><div class="panel" id="p-wh2"><h3>Warehouse</h3><div id="wh2-body"><div class="hint">Click a warehouse in the list.</div></div></div></div>
+</div></div>
+
+<!-- ============================ ORDERS ============================ -->
+<div class="pane" id="pane-orders"><div class="wrap2">
+  <div class="panel"><h3>Orders</h3>
+    <div class="toolbar">
+      <input id="ol-id" type="number" placeholder="order id" min="0">
+      <label>day <input id="ol-from" type="number" min="0" placeholder="from"> – <input id="ol-to" type="number" min="0" placeholder="to"></label>
+      <button id="ol-today" class="ghost sm" title="limit to the slider day">= slider day</button>
+      <select id="ol-status"><option value="">any status</option><option value="delivered">delivered on time</option>
+        <option value="late">delivered late</option><option value="partial">incomplete</option>
+        <option value="pending">in pipeline</option><option value="lost">lost</option>
+        <option value="late,partial,pending,lost">any problem</option></select>
+      <select id="ol-wh"><option value="">any warehouse</option></select>
+      <select id="ol-region"><option value="">any region</option></select>
+      <select id="ol-split"><option value="">split: any</option><option value="yes">split only</option><option value="no">single parcel</option></select>
+      <input id="ol-sku" type="number" min="0" placeholder="contains SKU" style="width:110px">
+      <input id="ol-minl" type="number" min="1" placeholder="min lines">
+      <label>per page <select id="ol-limit"><option>25</option><option selected>50</option><option>100</option><option>200</option></select></label>
+      <button id="ol-reset" class="ghost sm">Reset</button>
+    </div>
+    <div id="ol-counts" class="muted" style="font-size:11px;margin:0 6px 4px"></div>
+    <div id="ol-table"></div>
+    <div class="pager" id="ol-pager"></div>
+  </div>
+  <div class="right"><div class="panel" id="p-order2"><h3>Order</h3><div class="hint">Click an order in the list.</div></div></div>
+</div></div>
+<!-- ============================ SALES ============================ -->
+<div class="pane" id="pane-sales">
+  <div class="toolbar" style="padding:10px 10px 0">
+    <span class="muted">period</span>
+    <select id="sl-scope">
+      <option value="all">whole run</option><option value="through">through slider day</option>
+      <option value="day">slider day only</option><option value="custom">custom range</option>
+    </select>
+    <span id="sl-custom" style="display:none"><input id="sl-from" type="number" min="0" placeholder="from"> – <input id="sl-to" type="number" min="0" placeholder="to"></span>
+    <span class="muted" id="sl-range"></span>
+  </div>
+  <div class="panel" style="margin:8px 10px"><h3>Money — <span id="sl-title"></span></h3>
+    <div id="sl-kpi"></div>
+    <div class="muted" style="font-size:11px;margin:4px 6px">Revenue = price × delivered units (on the delivery day). Costs are booked when they happen:
+      purchase on receipt, fulfilment (shipping + handling) on ship, holding daily, penalties on the event.
+      Cash margin = revenue − all spend in the period; unit margin replaces purchases with the cost of the units actually sold.</div>
+  </div>
+  <div class="salesgrid">
+    <div class="panel"><h3>Per day: revenue vs costs</h3><div id="sl-daily" class="chart"></div></div>
+    <div class="panel"><h3>Cumulative revenue, spend and cash margin</h3><div id="sl-cum" class="chart"></div></div>
+    <div class="panel"><h3>Where the money goes (cost structure)</h3><div id="sl-struct" class="chart"></div></div>
+    <div class="panel"><h3>Lost sales per day (revenue not earned + penalties)</h3><div id="sl-lost" class="chart"></div></div>
+    <div class="panel"><h3>By warehouse</h3><div id="sl-wh"></div></div>
+    <div class="panel"><h3>By region</h3><div id="sl-region"></div></div>
+    <div class="panel" style="grid-column:1/-1"><h3>By category</h3><div id="sl-cat"></div>
+      <div class="muted" style="font-size:11px;margin:4px 6px">Per category / SKU, fulfilment and late penalties are the parcel's cost split per line; holding = storage cost × daily stock.</div></div>
+  </div>
+  <div class="panel" style="margin:0 10px 10px"><h3>By SKU</h3>
+    <div class="toolbar">
+      <input id="ss-q" placeholder="SKU id(s)" style="width:110px">
+      <select id="ss-cat"><option value="">all categories</option></select>
+      <label>per page <select id="ss-limit"><option>25</option><option selected>50</option><option>100</option><option>200</option></select></label>
+    </div>
+    <div id="ss-table"></div>
+    <div class="pager" id="ss-pager"></div>
   </div>
 </div>
 <script src="/replay.js"></script>

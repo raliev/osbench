@@ -37,6 +37,28 @@ def list_runs(runs_dir: Path) -> list[dict]:
     return out
 
 
+def list_generations(runs_dir: Path) -> list[dict]:
+    """Generated folders (``runs/<name>/`` with orders.parquet), newest generation first."""
+    runs_dir = Path(runs_dir)
+    out = []
+    if not runs_dir.exists():
+        return out
+    for op in runs_dir.glob("*/orders.parquet"):
+        d = op.parent
+        man = {}
+        if (d / "manifest.json").exists():
+            try:
+                man = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                pass
+        runs = sorted(p.parent.name for p in d.glob("*/events.parquet"))
+        out.append({"name": d.name, "dir": str(d), "mtime": op.stat().st_mtime,
+                    "scenario": man.get("scenario"), "seed": man.get("seed"),
+                    "lines": man.get("n_orders_lines"), "runs": runs})
+    out.sort(key=lambda g: g["mtime"], reverse=True)
+    return out
+
+
 class CompareManager:
     """Runs several sourcing policies on one generated world (same orders = CRN) and
     collects each policy's metrics and per-day time series for side-by-side comparison."""

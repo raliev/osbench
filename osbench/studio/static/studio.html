@@ -29,7 +29,13 @@
     <button id="btn-replenishment-help" class="policy-help-btn" title="About the replenishment policies">i</button>
     <span class="muted">seed</span>
     <input id="seed-input" type="number" value="0" min="0" style="width:64px">
-    <button id="btn-run">Run ▶</button>
+    <span class="splitbtn">
+      <button id="btn-run" title="generate the world + orders, then run the simulation">Run ▶</button><button id="btn-run-menu" class="caret" title="more run options">▾</button>
+      <div class="splitmenu" id="run-menu" style="display:none">
+        <div class="mi" id="mi-generate"><b>Generate</b><div class="muted">world + orders only, no simulation</div></div>
+        <div class="mi" id="mi-run-gen"><b>Run over generated…</b><div class="muted">simulate on an existing generation (no regenerate)</div></div>
+      </div>
+    </span>
   </div>
 
   <div class="grid">

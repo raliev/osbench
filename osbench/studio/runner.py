@@ -7,6 +7,7 @@ land under ``runs/<config>_s<seed>/<sourcing>``.
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
@@ -38,19 +39,33 @@ class RunManager:
                replenishment: str = "base_stock", run_name: str | None = None,
                config_json: dict | None = None,
                sourcing_params: dict | None = None,
-               replenishment_params: dict | None = None) -> str:
+               replenishment_params: dict | None = None, mode: str = "full") -> str:
+        """mode: "full" = generate then simulate, "generate" = world + orders only,
+        "run" = simulate over an already generated folder ``runs/<run_name>`` (its own
+        scenario.json is used; the editor config is ignored)."""
+        if mode not in ("full", "generate", "run"):
+            raise ValueError(f"unknown mode {mode!r}")
         run_id = uuid.uuid4().hex[:12]
+        if mode == "run":
+            label = _safe_label(run_name, "")
+            scen_dir = self.runs_dir / label
+            if not label or not (scen_dir / "orders.parquet").exists():
+                raise FileNotFoundError(f"no generated data in {scen_dir}")
+            cfg = ScenarioConfig.model_validate_json((scen_dir / "scenario.json").read_text("utf-8"))
+            ref = cfg
+            config_name = cfg.name
         # The run can carry an inline edited config (so tweaked params actually apply, even
         # for a preset) or just reference a saved config/preset by name.
-        if config_json is not None:
+        elif config_json is not None:
             ref: str | ScenarioConfig = ScenarioConfig.model_validate(config_json)
             cfg = ref
         else:
             ref = resolve_for_run(config_name, self.configs_dir)
             cfg = load_scenario(ref)
-        # The run label is its folder under runs/ -> a distinct name is a distinct entry and
-        # never overwrites a run made with other parameters. Default: <config>_s<seed>.
-        label = _safe_label(run_name, f"{config_name}_s{seed}")
+        if mode != "run":
+            # The run label is its folder under runs/ -> a distinct name is a distinct entry and
+            # never overwrites a run made with other parameters. Default: <config>_s<seed>.
+            label = _safe_label(run_name, f"{config_name}_s{seed}")
         meta = {
             "preset": label, "policy": sourcing,
             "wh_names": [w.name for w in cfg.warehouses],
@@ -62,20 +77,20 @@ class RunManager:
         with self._lock:
             self._runs[run_id] = {
                 "run_id": run_id, "status": "starting", "config": config_name,
-                "run_name": label, "sourcing": sourcing, "seed": seed,
+                "run_name": label, "sourcing": sourcing, "seed": seed, "mode": mode,
                 "run_dir": None, "error": None, "started": time.time(),
             }
             self._live[run_id] = {"hub": hub, "control": control}
         threading.Thread(
             target=self._execute,
             args=(run_id, ref, label, sourcing, seed, replenishment,
-                  sourcing_params or {}, replenishment_params or {}),
+                  sourcing_params or {}, replenishment_params or {}, mode),
             daemon=True,
         ).start()
         return run_id
 
     def _execute(self, run_id, ref, label, sourcing, seed, replenishment,
-                 sourcing_params, replenishment_params) -> None:
+                 sourcing_params, replenishment_params, mode="full") -> None:
         try:
             import pandas as pd
 
@@ -84,8 +99,12 @@ class RunManager:
             from ..metrics.compute import write_metrics
 
             scen_dir = self.runs_dir / label
-            self._update(run_id, status="generating")
-            generate_run(ref, seed, scen_dir)
+            if mode != "run":
+                self._update(run_id, status="generating")
+                generate_run(ref, seed, scen_dir)
+                if mode == "generate":
+                    self._update(run_id, status="done", gen_dir=str(scen_dir))
+                    return
 
             world = load_world_from_dir(scen_dir)
             orders = pd.read_parquet(scen_dir / "orders.parquet")
@@ -102,6 +121,11 @@ class RunManager:
                             sourcing_cfg=scfg, replenishment_cfg=rcfg,
                             live_hub=hub, snapshot_every_hours=6, inventory_detail=detail)
             result = eng.run(out)
+            # Run-time policy params, so the inspector can recompute safety stock / ATP.
+            (out / "policy.json").write_text(json.dumps({
+                "sourcing": sourcing, "replenishment": replenishment,
+                "sourcing_params": sourcing_params, "replenishment_params": replenishment_params,
+            }, indent=2), encoding="utf-8")
             metrics = write_metrics(out, warmup_days=cfg.warmup_days, scenario_dir=scen_dir)
             status = "stopped" if result.get("status") == "stopped" else "done"
             self._update(run_id, status=status, metrics=metrics)
@@ -124,6 +148,7 @@ class RunManager:
         hub = live["hub"]
         return {
             "status": st.get("status"), "run_dir": st.get("run_dir"),
+            "mode": st.get("mode"), "gen_dir": st.get("gen_dir"),
             "metrics": st.get("metrics"), "error": st.get("error"),
             "meta": hub.meta, "snapshots": hub.snapshots_since(since),
         }

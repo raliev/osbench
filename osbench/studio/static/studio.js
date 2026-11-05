@@ -796,6 +796,9 @@ async function pollMonitor() {
     document.getElementById("rm-stop").disabled = true;
     if (s.status === "failed") {
       document.getElementById("rm-final").innerHTML = `<span class="errs">${s.error}</span>`;
+    } else if (s.mode === "generate") {
+      document.getElementById("rm-final").innerHTML = `generated into <b>${s.gen_dir}</b>.`
+        + `<br>Use <b>Run ▾ → Run over generated</b> to simulate on it.`;
     } else if (s.metrics) {
       const m = s.metrics;
       let txt = `cost/order ${m.total_cost_per_order?.toFixed(2)} · on-time ${(m.promise_hit_rate ?? 0).toFixed(3)} · split ${(m.split_rate ?? 0).toFixed(3)}`;
@@ -837,6 +840,67 @@ function pushSnapshot(s) {
 async function stopRun() {
   if (rmId) await fetch(`/api/run/${rmId}/stop`, { method: "POST" });
   document.getElementById("rm-stop").disabled = true;
+}
+
+// ----------------------------------------------------------------- launching
+// mode "full": generate then run (the main Run button); "generate": world + orders only.
+async function launchRun(mode) {
+  if (cfgSource === "user" && dirty) {
+    await fetch("/api/save", { method: "POST", body: JSON.stringify({ name: cfgName, config: cfg }) });
+    dirty = false;
+  }
+  const sourcing = document.getElementById("sourcing-select").value;
+  const replenishment = document.getElementById("replenishment-select").value;
+  const seed = +document.getElementById("seed-input").value;
+  // Suggest a run name: <config>_s<seed> plus any changed params, so a run with tweaked
+  // parameters lands in its own folder and never overwrites the baseline run. The policy
+  // is a subfolder of this, so different policies on the same params still share one world.
+  const suffix = changedParamsSuffix(baseCfg, cfg);
+  let suggested = `${cfgName}_s${seed}`;
+  if (suffix) suggested += `__${suffix}`;
+  const what = mode === "generate" ? "Generation folder name" : "Run name (its own entry; different name = no overwrite)";
+  const runName = prompt(what + ":", suggested);
+  if (runName === null) return;  // cancelled
+  // Always send the edited config so tweaked params apply even for an unsaved preset.
+  const body = { config: cfgName, sourcing, replenishment, seed, run_name: runName, mode,
+                 config_json: cfg, replenishment_params: replParamsForRun() };
+  const r = await (await fetch("/api/run", { method: "POST", body: JSON.stringify(body) })).json();
+  if (r.error) { alert("Run failed: " + r.error); return; }
+  startMonitor(r.run_id, runName, mode === "generate" ? "generate only" : sourcing, seed);
+}
+
+// Pick an existing generation (newest first) and simulate over it without regenerating.
+async function runOverGenerated() {
+  const gens = await (await fetch("/api/generations")).json();
+  if (!gens.length) { alert("Nothing generated yet — use Generate (or Run) first."); return; }
+  const sourcing = document.getElementById("sourcing-select").value;
+  const replenishment = document.getElementById("replenishment-select").value;
+  const ov = document.createElement("div"); ov.className = "modal-overlay";
+  let sel = gens[0].name;
+  const rows = gens.map((g, i) => `<div class="genrow ${i === 0 ? "sel" : ""}" data-name="${g.name}">`
+    + `<b>${g.name}</b>${i === 0 ? ' <span class="badge">latest</span>' : ""}`
+    + `<div class="muted">${g.scenario ?? "?"} · seed ${g.seed ?? "?"} · ${g.lines ?? "?"} order lines · `
+    + `${new Date(g.mtime * 1000).toLocaleString()}${g.runs.length ? " · runs: " + g.runs.join(", ") : " · no runs yet"}</div></div>`).join("");
+  ov.innerHTML = `<div class="modal"><h2>Run over generated</h2>`
+    + `<div class="muted">Simulates <b>${sourcing}</b> / <b>${replenishment}</b> on the chosen generation's own `
+    + `world and orders (editor parameters are not applied). An existing run of the same policy is overwritten.</div>`
+    + `<h3>Generation</h3><div style="max-height:50vh;overflow:auto">${rows}</div>`
+    + `<div class="closebar" style="gap:8px"><button class="ghost" id="rg-cancel">Cancel</button><button id="rg-go">Run ▶</button></div></div>`;
+  document.body.appendChild(ov);
+  ov.querySelectorAll(".genrow").forEach(r => r.onclick = () => {
+    ov.querySelectorAll(".genrow").forEach(x => x.classList.remove("sel")); r.classList.add("sel"); sel = r.dataset.name;
+  });
+  ov.onclick = (e) => { if (e.target === ov) ov.remove(); };
+  ov.querySelector("#rg-cancel").onclick = () => ov.remove();
+  ov.querySelector("#rg-go").onclick = async () => {
+    ov.remove();
+    const seed = +document.getElementById("seed-input").value;
+    const body = { config: cfgName, sourcing, replenishment, seed, run_name: sel, mode: "run",
+                   replenishment_params: replParamsForRun() };
+    const r = await (await fetch("/api/run", { method: "POST", body: JSON.stringify(body) })).json();
+    if (r.error) { alert("Run failed: " + r.error); return; }
+    startMonitor(r.run_id, sel, sourcing, seed);
+  };
 }
 
 // ----------------------------------------------------------------- tabs
@@ -1069,29 +1133,14 @@ async function init() {
     if (!r.ok) { alert("clone failed: " + JSON.stringify(r.errors)); return; }
     await refreshConfigList(dst); loadConfig(dst);
   };
-  document.getElementById("btn-run").onclick = async () => {
-    if (cfgSource === "user" && dirty) {
-      await fetch("/api/save", { method: "POST", body: JSON.stringify({ name: cfgName, config: cfg }) });
-      dirty = false;
-    }
-    const sourcing = document.getElementById("sourcing-select").value;
-    const replenishment = document.getElementById("replenishment-select").value;
-    const seed = +document.getElementById("seed-input").value;
-    // Suggest a run name: <config>_s<seed> plus any changed params, so a run with tweaked
-    // parameters lands in its own folder and never overwrites the baseline run. The policy
-    // is a subfolder of this, so different policies on the same params still share one world.
-    const suffix = changedParamsSuffix(baseCfg, cfg);
-    let suggested = `${cfgName}_s${seed}`;
-    if (suffix) suggested += `__${suffix}`;
-    const runName = prompt("Run name (its own entry; different name = no overwrite):", suggested);
-    if (runName === null) return;  // cancelled
-    // Always send the edited config so tweaked params apply even for an unsaved preset.
-    const body = { config: cfgName, sourcing, replenishment, seed, run_name: runName,
-                   config_json: cfg, replenishment_params: replParamsForRun() };
-    const r = await (await fetch("/api/run", { method: "POST", body: JSON.stringify(body) })).json();
-    if (r.error) { alert("Run failed: " + r.error); return; }
-    startMonitor(r.run_id, runName, sourcing, seed);
+  document.getElementById("btn-run").onclick = () => launchRun("full");
+  const menu = document.getElementById("run-menu");
+  document.getElementById("btn-run-menu").onclick = (e) => {
+    e.stopPropagation(); menu.style.display = menu.style.display === "none" ? "block" : "none";
   };
+  document.addEventListener("click", () => { menu.style.display = "none"; });
+  document.getElementById("mi-generate").onclick = () => { menu.style.display = "none"; launchRun("generate"); };
+  document.getElementById("mi-run-gen").onclick = () => { menu.style.display = "none"; runOverGenerated(); };
   document.getElementById("btn-sourcing-help").onclick = () => showPolicyHelp("sourcing");
   document.getElementById("btn-replenishment-help").onclick = () => showPolicyHelp("replenishment");
   document.getElementById("rm-stop").onclick = stopRun;

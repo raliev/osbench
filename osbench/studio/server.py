@@ -11,7 +11,8 @@ from fastapi.responses import HTMLResponse, Response
 
 from . import configs as cfgio
 from .preview import preview
-from .results import ComparisonStore, CompareManager, InspectorManager, list_runs
+from .results import (ComparisonStore, CompareManager, InspectorManager, list_generations,
+                      list_runs)
 from .runner import RunManager
 
 _STATIC = Path(__file__).parent / "static"
@@ -97,6 +98,7 @@ def build_app(configs_dir: Path, runs_dir: Path = Path("runs")) -> FastAPI:
                 run_name=body.get("run_name"), config_json=body.get("config_json"),
                 sourcing_params=body.get("sourcing_params"),
                 replenishment_params=body.get("replenishment_params"),
+                mode=body.get("mode", "full"),
             )
         except Exception as e:  # noqa: BLE001 -- surface a bad inline config as a message
             return _json({"error": f"{type(e).__name__}: {e}"})
@@ -123,6 +125,10 @@ def build_app(configs_dir: Path, runs_dir: Path = Path("runs")) -> FastAPI:
         from ..registry import list_replenishment, list_sourcing
 
         return _json({"sourcing": list_sourcing(), "replenishment": list_replenishment()})
+
+    @app.get("/api/generations")
+    def generations() -> Response:
+        return _json(list_generations(runs_dir))
 
     @app.get("/api/results")
     def results() -> Response:

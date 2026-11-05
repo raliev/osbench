@@ -151,3 +151,61 @@ def test_inspector_without_inventory_detail(tmp_path):
     assert data.meta()["has_inventory_detail"] is False
     w = data.warehouse_detail(0, day=1)
     assert w["stock"] == []  # no per-SKU stock without detail
+
+
+@pytest.mark.fast
+def test_catalog_views_paginate_and_filter(replay_dir):
+    c = TestClient(build_app(ReplayData(replay_dir)))
+    p = c.get("/api/products?day=3&limit=5").json()
+    assert p["stock_source"] == "snapshot" and len(p["rows"]) == 5 and p["total"] > 5
+    r = p["rows"][0]
+    assert {"price", "unit_cost", "atp", "atp_wh", "ordered_units"} <= set(r)
+    page2 = c.get("/api/products?day=3&limit=5&offset=5").json()["rows"]
+    assert page2[0]["sku"] != r["sku"]
+    d = c.get(f"/api/product/{r['sku']}").json()
+    assert d["found"] and "total" in d["costs"] and d["demand"]["units"] == r["ordered_units"]
+    w = c.get("/api/warehouses?day=3").json()
+    assert w["total"] == len(w["rows"]) > 0 and w["rows"][0]["spark"]
+    o = c.get("/api/orders?day_from=2&day_to=4&limit=10").json()
+    assert o["total"] > 0 and all(2 <= x["day"] <= 4 for x in o["rows"])
+    lost = c.get("/api/orders?status=lost").json()
+    assert all(x["status"] == "lost" for x in lost["rows"])
+
+
+@pytest.mark.fast
+def test_stock_reconstructed_without_inventory_detail(replay_dir):
+    # Large runs skip inventory_sku_daily: the journal reconstruction must match the snapshot.
+    from osbench.replay.explore import Explorer
+
+    data = ReplayData(replay_dir)
+    snap = Explorer(data).stock_at(5)
+    data.inv_sku = None
+    rec = Explorer(data).stock_at(5)
+    assert snap["source"] == "snapshot" and rec["source"] == "journal"
+    assert (snap["book"] == rec["book"]).all()
+    detail = Explorer(data).product_detail(0)
+    assert detail["stock_source"] == "journal"
+
+
+@pytest.mark.fast
+def test_sales_ledger_reconciles(replay_dir):
+    from osbench.replay.explore import Explorer
+
+    c = TestClient(build_app(ReplayData(replay_dir)))
+    s = c.get("/api/sales").json()
+    k = s["kpi"]
+    assert k["revenue"] > 0 and k["spend"] == pytest.approx(
+        sum(k[x] for x in ("purchase", "fulfilment", "holding", "late_penalty", "lost_penalty")), abs=0.05)
+    # Category allocations add up to the journal totals (holding / fulfilment are estimated per line).
+    for key in ("revenue", "purchase", "fulfilment", "holding"):
+        assert sum(r[key] for r in s["by_category"]) == pytest.approx(k[key], rel=1e-3, abs=0.05)
+    assert sum(r["revenue"] for r in s["by_wh"]) == pytest.approx(k["revenue"], rel=1e-6)
+    part = c.get("/api/sales?day_from=2&day_to=4").json()
+    assert part["from"] == 2 and part["to"] == 4 and part["kpi"]["revenue"] < k["revenue"]
+    skus = c.get("/api/sales/skus?sort=margin&desc=false&limit=3").json()
+    assert len(skus["rows"]) == 3 and skus["rows"][0]["margin"] <= skus["rows"][1]["margin"]
+    # Without stock snapshots, the reconstructed holding still matches the journal.
+    data = ReplayData(replay_dir)
+    data.inv_sku = None
+    s2 = Explorer(data).sales()
+    assert sum(r["holding"] for r in s2["by_category"]) == pytest.approx(s2["kpi"]["holding"], rel=1e-3)

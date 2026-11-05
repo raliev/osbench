@@ -108,3 +108,14 @@ a{color:var(--accent)}
 .rmchart{height:150px}
 #rm-status.running{color:var(--green)}#rm-status.done{color:var(--accent)}
 #rm-status.failed,#rm-status.stopped,#rm-status.aborted{color:var(--red)}
+/* Run split button: main action + caret that opens extra modes */
+.splitbtn{position:relative;display:inline-flex}
+.splitbtn #btn-run{border-radius:5px 0 0 5px}
+.splitbtn .caret{border-radius:0 5px 5px 0;padding:6px 8px;border-left:1px solid rgba(255,255,255,.25)}
+.splitmenu{position:absolute;right:0;top:calc(100% + 4px);z-index:50;min-width:250px;background:#0d1117;
+  border:1px solid var(--line);border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,.5);padding:4px}
+.splitmenu .mi{padding:6px 9px;border-radius:4px;cursor:pointer}
+.splitmenu .mi:hover{background:#17202e}
+.splitmenu .mi .muted{font-size:11px}
+.genrow{padding:6px 8px;border:1px solid var(--line);border-radius:6px;margin:4px 0;cursor:pointer}
+.genrow:hover{border-color:var(--accent)}.genrow.sel{border-color:var(--accent);background:#17202e}
