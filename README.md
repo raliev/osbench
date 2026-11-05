@@ -4,11 +4,15 @@ An open, reproducible benchmark stand for comparing order-sourcing (warehouse-se
 algorithms in an e-commerce network. Discrete-event simulator with common random numbers (CRN)
 and a strict comparison protocol.
 
-> Status: **v1 complete** — package skeleton, configs, RNG streams, world/demand generator,
-> simulation core, journal, invariants, metrics, four sourcing policies (random, nearest,
-> cheapest_myopic, weighted_score), base_stock/s_S replenishment, a live web dashboard,
-> paired comparison, and offline HTML reports.
-> Full spec: `plans/expressive-pondering-scroll.md`.
+> Status: **v1 complete + extended.** Package skeleton, configs, RNG streams, world/demand
+> generator, discrete-event core, journal, invariants, metrics, **11 sourcing + 5 replenishment
+> policies**, four promise methods with customer acceptance, three shortage points (+ substitution /
+> re-sourcing / backorder), deferred sourcing (RQ5), ATP `basic`/`cumulative` with tolerance, a live
+> web dashboard, a visual config **studio** (map editor + launcher + order/warehouse inspector +
+> comparisons), weight tuning (`osbench tune`), parameter sweeps, paired-CI comparison, and offline
+> HTML reports. Everything model-relevant is config-driven.
+> Not yet: ML/RL (Gymnasium/PPO/DQN), Numba speedups for `medium`, Olist/JD calibration, golden-run CI.
+> Full spec: `plans/expressive-pondering-scroll.md` and `tz.md`.
 
 ## Install
 
@@ -59,6 +63,10 @@ osbench replay runs/small_s0/nearest
 # Offline hindsight shipping lower bound ("cost of myopia" reference).
 # Every run's metrics.json also carries gap_to_hindsight.
 osbench hindsight small
+
+# Tune weighted_score factor weights on training seeds (RQ1) -> weights.json,
+# then run them with: --sourcing weighted_score_tuned (params from the file).
+osbench tune --scenario demo_showcase --seeds 0-9 --trials 40 --out weights.json
 
 # Open the visual config studio: an interactive map editor (drag warehouses & customer
 # circles, wheel-zoom/pan, click to edit with sliders), parameter sliders, a clickable
@@ -113,6 +121,52 @@ warehouses within `tolerance_price_frac` / `tolerance_days` of the best candidat
 stock becomes unreachable and can be *stranded*, so the sourcing allocation drives lost
 sales (off by default — it does not change the abundant-stock regimes). This is the lever
 behind `demo_stranded`.
+
+## Policies
+
+Swap any sourcing policy against any replenishment policy (`--sourcing` / `--replenishment`);
+each is a plugin (one file + a registry entry). `osbench policies` lists them.
+
+**Sourcing** (choose a warehouse per order):
+
+| policy | idea |
+|---|---|
+| `random` | random warehouse with stock (lower-bound baseline) |
+| `nearest` | nearest warehouse covering all lines, else fewest parcels |
+| `cheapest_myopic` | minimize current shipping + handling, splits allowed |
+| `weighted_score` | Σ wᵢ·fᵢ over normalized factors (distance, price, promise, splits, above-safety, load, rank) — industrial OMS baseline |
+| `weighted_score_tuned` | same factors, weights tuned offline (`osbench tune`) — RQ1 |
+| `dtlp_bidprice` | periodic per-SKU transportation LP; dual "bid" prices = stock opportunity cost |
+| `primal_dual` | online dual multipliers, no forecast; bid rises as stock depletes |
+| `hindsight_lp` | sees full demand, plans capacity-aware region→warehouse flows (planning bound) |
+| `spillover_limit` | cheapest with a daily cap on "foreign" orders per warehouse |
+| `rolling_milp` | periodic capacity-constrained re-optimization on forecast demand |
+
+**Replenishment** (buy stock into warehouses):
+
+| policy | idea |
+|---|---|
+| `base_stock` | order up to S every R days |
+| `s_S` | when position < s, order up to S |
+| `R_Q` | below the reorder point, order whole lots of Q |
+| `forecast_driven` | S = forecast over lead+review + z·σ safety, from observed demand |
+| `network_allocation` | network order per SKU, allocated to warehouses by demand share |
+
+## Model mechanics (all config-driven)
+
+The order lifecycle covers creation → ATP check → promise → (optional deferred sourcing) →
+reserve → warehouse queue → pick → pack → ship → deliver, with:
+
+- **Promise** (`promise.method`): `zone_fixed`, `transit_plus_buffer`, `atp_based` (by stock +
+  expected receipts), `percentile`; plus `p_accept_promise` (customers may refuse a long promise).
+- **ATP** (`atp.method`): `on_hand_only` / `basic` / `cumulative`, with optional network tolerance.
+- **Three shortage points** (`shortage.*`): checkout (ATP miss → partial / substitute / refuse),
+  post-order (unsourceable line → partial-ship / accept-slow / cancel), pick (phantom stock from
+  `inventory_accuracy` < 1 → re-source / backorder / partial), with per-stage penalties.
+- **Deferred sourcing** (`deferral.mode`): park an order without a reservation and wait for an
+  inbound receipt within the promise slack; receipt arbitration (`edf` / `fifo` / `value`).
+- Configurable process times, warehouse capacity/cut-off, carrier limits, tariff zones, and
+  replenishment levels (`review_days`, `safety_days`, `S_overshoot`).
 
 ## Live dashboard
 
