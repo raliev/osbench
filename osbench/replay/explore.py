@@ -69,6 +69,14 @@ class Explorer:
             self.lost = ev.filter(pl.col("type") == int(JType.LOST_SALE)).select(
                 "t", "order_id", "sku", "qty", "cost")
             self._init_book, self._safety, self._safety_days = self._initial_stock()
+            self._reserve = True
+            scen = self.d.run_dir.parent / "scenario.json"
+            if scen.exists():
+                try:
+                    cfg = json.loads(scen.read_text("utf-8"))
+                    self._reserve = bool((cfg.get("reservation") or {}).get("enabled", True))
+                except Exception:  # noqa: BLE001
+                    pass
             self._storage_cost = self.d.warehouses["storage_cost_per_unit_day"].to_numpy() \
                 if "storage_cost_per_unit_day" in self.d.warehouses.columns else np.zeros(self.n_wh)
             ass = pl.read_parquet(self.d.run_dir.parent / "assortment.parquet")
@@ -122,7 +130,8 @@ class Explorer:
         t0 = int(day) * _MIN_PER_DAY
         shipped = self._acc(self.lines.filter(pl.col("ship_t") < t0))
         assigned = self._acc(self.lines.filter(pl.col("assign_t") < t0))
-        reserved = np.clip(assigned - shipped, 0, None)
+        # With reservation off the engine holds nothing between sourcing and pick.
+        reserved = np.clip(assigned - shipped, 0, None) if self._reserve else np.zeros_like(assigned)
         source = "journal"
         book = None
         if self.d.inv_sku is not None:

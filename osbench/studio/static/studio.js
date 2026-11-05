@@ -853,11 +853,14 @@ async function launchRun(mode) {
   const replenishment = document.getElementById("replenishment-select").value;
   const seed = +document.getElementById("seed-input").value;
   // Suggest a run name: <config>_s<seed> plus any changed params, so a run with tweaked
-  // parameters lands in its own folder and never overwrites the baseline run. The policy
-  // is a subfolder of this, so different policies on the same params still share one world.
+  // parameters lands in its own folder and never overwrites the baseline run. A full run also
+  // names its sourcing + replenishment policies: the folder only splits by sourcing, so two
+  // replenishment policies on one name would otherwise overwrite each other. A bare generation
+  // is policy-independent and keeps the plain name.
   const suffix = changedParamsSuffix(baseCfg, cfg);
   let suggested = `${cfgName}_s${seed}`;
   if (suffix) suggested += `__${suffix}`;
+  if (mode !== "generate") suggested += `__${sourcing}__${replenishment}`;
   const what = mode === "generate" ? "Generation folder name" : "Run name (its own entry; different name = no overwrite)";
   const runName = prompt(what + ":", suggested);
   if (runName === null) return;  // cancelled

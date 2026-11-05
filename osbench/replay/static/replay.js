@@ -32,7 +32,30 @@ function cursorShape() {
     line: { color: "#e6edf3", width: 1, dash: "dot" } };
 }
 
-async function getJSON(url) { return (await fetch(url)).json(); }
+// A failed API call shows a banner instead of silently leaving empty panels. A 404 on a known
+// endpoint usually means the server process predates this page (restart `osbench studio`).
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) {
+    const path = url.split("?")[0];
+    const msg = r.status === 404
+      ? `The inspector server does not know ${path} — it was started before this version of the UI. Restart \`osbench studio\` (or the inspector) and reopen it.`
+      : `${path} failed: HTTP ${r.status} ${(await r.text()).slice(0, 200)}`;
+    showError(msg);
+    throw new Error(msg);
+  }
+  return r.json();
+}
+function showError(msg) {
+  let b = document.getElementById("api-error");
+  if (!b) {
+    b = document.createElement("div"); b.id = "api-error";
+    b.style.cssText = "background:#3d1b1b;color:#f85149;border-bottom:1px solid #f85149;padding:6px 16px;font-size:12px;cursor:pointer";
+    b.title = "click to dismiss"; b.onclick = () => b.remove();
+    document.querySelector("header").after(b);
+  }
+  b.textContent = msg;
+}
 
 // ----------------------------------------------------------------- map / day
 async function loadDay(day) {

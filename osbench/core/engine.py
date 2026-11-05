@@ -68,6 +68,9 @@ class SimEngine:
         # Per-SKU x warehouse daily stock snapshots for the inspector (small scenarios only).
         self.inventory_detail = bool(inventory_detail)
         self._inv_sku_daily: list[tuple[int, np.ndarray, np.ndarray]] = []
+        # reservation.enabled=False: sourcing holds nothing, stock is decremented only at pick, so
+        # several orders can claim the same unit and the conflict surfaces at pick (point 3).
+        self._reserve = bool(self.cfg.reservation.enabled)
 
         # Cheapest supplier (v1: a single one for all, by minimum price).
         sup = min(self.cfg.suppliers, key=lambda s: s.unit_price)
@@ -439,10 +442,17 @@ class SimEngine:
                 best, best_av = s2, av
         return best
 
+    def _atp(self) -> np.ndarray:
+        """ATP per atp.method: on_hand_only = book - reserved; basic / cumulative also keep the
+        safety stock back (cumulative adds inbound receipts on top, see _coverage_atp)."""
+        if self._atp_method == "on_hand_only":
+            return np.clip(self.inv.book - self.inv.reserved, 0, None)
+        return self.inv.atp()
+
     def _coverage_atp(self, t: int) -> np.ndarray:
         """ATP used for promise/coverage decisions. method=cumulative adds inbound receipts
         arriving within the horizon (and reserved already nets out committed promises)."""
-        atp = self.inv.atp()
+        atp = self._atp()
         if self._atp_method == "cumulative" and self._inbound_sched:
             atp = atp.copy()
             horizon = t + self._atp_horizon_min
@@ -456,7 +466,7 @@ class SimEngine:
         """Days until every line is available: now (network ATP covers), or the day an inbound
         schedule accumulates enough. Precise — walks the receipt schedule in ETA order."""
         s, e = int(self.o_start[oi]), int(self.o_end[oi])
-        atp = self.inv.atp()
+        atp = self._atp()
         delay = 0
         for gi in range(s, e):
             sku = int(self.l_sku[gi])
@@ -515,7 +525,7 @@ class SimEngine:
         import time
 
         order = self._make_order(oi)
-        atp = self.inv.atp()
+        atp = self._atp()
         # Warehouse outage: hide the downed warehouse from policies within the window.
         if self._outage_wh >= 0 and self._outage_start <= t < self._outage_end:
             atp = atp.copy()
@@ -559,7 +569,7 @@ class SimEngine:
         # p_accept_slow: rather than lose an unplaced line, the customer accepts an out-of-tolerance
         # (slow/expensive) warehouse. Place it at the cheapest warehouse with ATP, ignoring tolerance.
         if decision.unassigned_lines and sh.p_accept_slow > 0:
-            atp = self.inv.atp()
+            atp = self._atp()
             zone = self.net.shipping.zone(self.net.distance_to(order.dest_x, order.dest_y))
             shipcost = self.net.shipping.cost[zone]
             gc3 = make_generator(self.seed, "customer_choice", (oi, 3))
@@ -732,7 +742,8 @@ class SimEngine:
         # Atomic reservation (single-threaded: ATP already accounted for at decision time).
         for wh, lines in by_wh.items():
             for gi in lines:
-                self.inv.reserved[self.l_sku[gi], wh] += self.l_qty[gi]
+                if self._reserve:
+                    self.inv.reserved[self.l_sku[gi], wh] += self.l_qty[gi]
                 self._demand_cum[self.l_sku[gi], wh] += self.l_qty[gi]  # realized demand per cell
                 # Record the line -> warehouse assignment for the inspector.
                 self.journal.log(
@@ -773,20 +784,23 @@ class SimEngine:
             if avail >= qty:
                 self.inv.phys[sku, wh] -= qty
                 self.inv.book[sku, wh] -= qty
-                self.inv.reserved[sku, wh] -= qty
+                if self._reserve:
+                    self.inv.reserved[sku, wh] -= qty
                 kept.append(gi)
             else:
                 # Point 3 (pick shortage): physical < book (phantom inventory, or a conflict when
                 # reservation is off). Try re-sourcing / backorder, else ship what's there or cancel.
                 self.st_short_pick += 1
-                self.inv.reserved[sku, wh] -= qty  # release our reservation
+                if self._reserve:
+                    self.inv.reserved[sku, wh] -= qty  # release our reservation
                 self.inv.book[sku, wh] = int(self.inv.phys[sku, wh])  # reconcile the phantom here
                 gc = make_generator(self.seed, "customer_choice", (oi, pidx, int(self.l_lineid[gi])))
                 # (a) re-source the line from another warehouse that physically has it.
                 if sh.p_resource > 0 and float(gc.random()) < sh.p_resource:
                     wh2 = self._find_phys_wh(sku, qty, wh)
                     if wh2 is not None:
-                        self.inv.reserved[sku, wh2] += qty
+                        if self._reserve:
+                            self.inv.reserved[sku, wh2] += qty
                         self.wh_wip[wh2] += 1
                         self._parcels[oi].append((wh2, [gi]))
                         self.queue.push(t, Ev.WH_QUEUE_ADMIT, oi, len(self._parcels[oi]) - 1)
@@ -795,7 +809,8 @@ class SimEngine:
                 if sh.backorder:
                     eta = self._next_inbound_at(sku, wh, t, int(self.o_promise[oi]))
                     if eta is not None:
-                        self.inv.reserved[sku, wh] += qty
+                        if self._reserve:
+                            self.inv.reserved[sku, wh] += qty
                         self.wh_wip[wh] += 1
                         self._parcels[oi].append((wh, [gi]))
                         self.queue.push(eta + 1, Ev.WH_QUEUE_ADMIT, oi, len(self._parcels[oi]) - 1)
@@ -889,7 +904,7 @@ class SimEngine:
             now_day=t // _MIN_PER_DAY,
             book_onhand=self.inv.book,
             reserved=self.inv.reserved,
-            atp=self.inv.atp(),
+            atp=self._atp(),
             in_transit=self.inv.in_transit,
             safety_stock=self.inv.safety,
             wh_load=(self.wh_lines_used / np.clip(self.net.capacity_lines, 1, None)).astype(np.float32),

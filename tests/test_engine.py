@@ -58,3 +58,39 @@ def test_cost_components_sum(tmp_path):
     total = (m["shipping_cost"] + m["holding_cost"] + m["purchase_cost"]
              + m["penalty_cost"] + m["lateness_penalty_cost"])
     assert abs(total - m["total_cost"]) < 1e-6
+
+
+def _run_cfg(tmp_path, preset, **updates):
+    """Run nearest on a preset with top-level config sections overridden (e.g. reservation)."""
+    gen = generate_run(preset, 0, tmp_path / "gen")
+    world = load_world_from_dir(gen)
+    world.config = world.config.model_copy(update={
+        k: getattr(world.config, k).model_copy(update=v) for k, v in updates.items()})
+    orders = pd.read_parquet(gen / "orders.parquet")
+    eng = SimEngine(world, orders, 0, "nearest")
+    eng.run(tmp_path / "out")
+    return eng, compute_metrics(tmp_path / "out", warmup_days=world.config.warmup_days)
+
+
+@pytest.mark.fast
+def test_reservation_off_holds_nothing(tmp_path):
+    # reservation.enabled=False: nothing is ever reserved, stock only leaves at pick.
+    on, _ = _run_cfg(tmp_path / "on", "demo_scarce", reservation={"enabled": True},
+                     atp={"method": "on_hand_only"})
+    off, m_off = _run_cfg(tmp_path / "off", "demo_scarce", reservation={"enabled": False},
+                          atp={"method": "on_hand_only"})
+    assert (off.inv.reserved == 0).all()
+    # Orders now race for the same units: the conflict surfaces as pick shortages.
+    assert off.st_short_pick > on.st_short_pick
+    assert m_off["lines_cancelled_by_stage"]["pick"] > 0
+
+
+@pytest.mark.fast
+def test_atp_on_hand_only_ignores_safety_stock(tmp_path):
+    eng, m_basic = _run_cfg(tmp_path / "b", "demo_scarce", atp={"method": "basic"})
+    basic = eng._atp()
+    eng._atp_method = "on_hand_only"  # same state, other formula: safety stock is not held back
+    onhand = eng._atp()
+    assert (onhand >= basic).all() and (onhand > basic).any()
+    _, m_onhand = _run_cfg(tmp_path / "o", "demo_scarce", atp={"method": "on_hand_only"})
+    assert m_onhand["lost_sales_rate"] != m_basic["lost_sales_rate"]
