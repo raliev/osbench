@@ -1,0 +1,9 @@
+# Showcase sweep: demonstrate that a load-aware policy beats the myopic ones on
+# demo_showcase (capacity-bound, symmetric warehouses, lateness penalty).
+#   osbench sweep --config experiments/showcase.yaml --out sweeps/showcase
+name: showcase
+scenarios: [demo_showcase]
+policies: [nearest, cheapest_myopic, weighted_score, dtlp_bidprice]
+replenishment: base_stock
+seeds: [0, 1, 2, 3, 4, 5, 6, 7]
+baseline: cheapest_myopic

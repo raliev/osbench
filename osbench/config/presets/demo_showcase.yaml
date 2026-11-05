@@ -1,0 +1,53 @@
+# demo_showcase — a scenario where the sourcing policy choice makes a clear, demonstrable
+# difference in total cost (for "replace plain cheapest/nearest with weighted and save X%").
+#
+# THE TENSION: three warehouses sit symmetrically around a central customer cloud, so the
+# shipping cost to a customer is (almost) identical from any warehouse — there is no cheap
+# winner. Each warehouse has LIMITED daily capacity: one alone cannot serve the demand, but
+# the three together can. A myopic "cheapest" policy breaks the tie the same way every time
+# and funnels all orders into one warehouse, which overflows its capacity; those orders queue
+# to the next day(s) and are delivered LATE, incurring the lateness penalty
+# (shortage.penalty_late_per_day). A load-aware policy (weighted_score, via its wh_load factor)
+# spreads orders across the three warehouses, stays within capacity, delivers on time, and
+# avoids the penalty — winning on total cost despite the tie on shipping.
+#
+# Stock is ample (cover 30) on purpose, so this isolates the capacity/lateness effect rather
+# than inventory scarcity. Use it to compare cheapest_myopic / nearest (overload) vs
+# weighted_score / dtlp_bidprice (balanced):
+#   osbench sweep --config experiments/showcase.yaml
+name: demo_showcase
+description: "Capacity-bound symmetric warehouses + a lateness penalty. A myopic policy dumps everything on one (tie-cheapest) warehouse -> overload -> late deliveries -> penalty; a load-aware policy (weighted_score) balances and wins by ~40% on total cost. The clearest 'replace cheapest with weighted' demo."
+sim_days: 45
+warmup_days: 7
+geo: { mode: plane, plane_size: 1000.0 }
+region_radius_km: 110.0
+regions:
+  - { region_id: 0, name: Core, x: 500.0, y: 500.0, population_weight: 1.6 }
+  - { region_id: 1, name: North, x: 500.0, y: 620.0, population_weight: 0.7 }
+  - { region_id: 2, name: South, x: 500.0, y: 380.0, population_weight: 0.7 }
+warehouses:
+  # Equilateral triangle around (500,500), radius ~200 -> equidistant to the Core cloud,
+  # so shipping cost is a tie and only the load factor can break it.
+  - { warehouse_id: 0, name: W0, x: 500.0, y: 700.0, capacity_lines_per_day: 200, rank: 0.5 }
+  - { warehouse_id: 1, name: W1, x: 327.0, y: 400.0, capacity_lines_per_day: 200, rank: 0.5 }
+  - { warehouse_id: 2, name: W2, x: 673.0, y: 400.0, capacity_lines_per_day: 200, rank: 0.5 }
+tariffs:
+  zone_bounds_km: [50.0, 300.0, 1000.0, 1000000000.0]
+  cost_by_zone: [3.0, 5.0, 7.0, 10.0]
+  per_kg_by_zone: [0.1, 0.2, 0.3, 0.5]
+  transit_days_by_zone: [1, 2, 4, 7]
+sku:
+  n_sku: 120
+  zipf_a: 1.1
+  n_categories: 4
+suppliers:
+  - { supplier_id: 0, name: S0, unit_price: 10.0, moq: 30, lead_time_days: 5, capacity_per_period: 300000 }
+demand:
+  base_orders_per_day: 360        # ~470 lines/day; one warehouse (cap 200) cannot absorb it
+  lines_per_order_mean: 1.3
+  qty_max: 2
+promise: { method: transit_plus_buffer, buffer_days: 1, min_processing_days: 1, cap_days: 10 }
+shortage:
+  penalty_late_per_day: 4.0       # a late delivery now costs money -> balancing load pays off
+deferral: { mode: none }
+initial_cover_days: 30            # ample stock: isolates the capacity/lateness effect

@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><title>osbench studio</title>
+<script src="/plotly.min.js"></script>
+<link rel="stylesheet" href="/studio.css">
+</head><body>
+<header>
+  <span class="title">osbench studio</span>
+  <div class="tabs">
+    <span class="tab active" data-tab="editor">Editor</span>
+    <span class="tab" data-tab="runs">Runs</span>
+    <span class="tab" data-tab="comparisons">Comparisons</span>
+  </div>
+</header>
+
+<!-- ============================== EDITOR TAB ============================== -->
+<div class="tabpane active" id="tab-editor">
+  <div class="editorbar">
+    <select id="config-select" title="choose a config"></select>
+    <span id="source-badge" class="badge preset">preset</span>
+    <button id="btn-clone" class="ghost">Clone…</button>
+    <button id="btn-save" class="ghost" disabled>Save</button>
+    <button id="btn-validate" class="ghost">Validate</button>
+    <span class="spacer"></span>
+    <span class="muted">run:</span>
+    <select id="sourcing-select" title="sourcing policy"></select>
+    <button id="btn-sourcing-help" class="policy-help-btn" title="About the sourcing policies">i</button>
+    <select id="replenishment-select" title="replenishment policy"></select>
+    <button id="btn-replenishment-help" class="policy-help-btn" title="About the replenishment policies">i</button>
+    <span class="muted">seed</span>
+    <input id="seed-input" type="number" value="0" min="0" style="width:64px">
+    <button id="btn-run">Run ▶</button>
+  </div>
+
+  <div class="grid">
+    <div class="col">
+      <div class="panel editor-left" id="editor" data-collapse="params">
+        <h3>Parameters</h3>
+        <div id="sections"></div>
+      </div>
+      <div class="panel" data-collapse="replparams">
+        <h3>Replenishment settings (run-time)</h3>
+        <div id="repl-params"></div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="panel" data-collapse="description">
+        <h3>Description — what makes this scenario special (click to edit)</h3>
+        <div id="desc-view" class="desc-preview" title="click to edit"></div>
+        <textarea id="desc-edit" class="desc-edit" style="display:none"
+          placeholder="Describe what makes this scenario special…"></textarea>
+      </div>
+      <div class="panel" data-collapse="map">
+        <h3>Map editor — drag warehouses &amp; customer circles · Ctrl+wheel = zoom · drag empty = pan</h3>
+        <label class="maptoggle"><input type="checkbox" id="show-zones"> tariff zones</label>
+        <div class="maptoolbar">
+          <button id="add-wh" class="ghost">+ Warehouse</button>
+          <button id="add-region" class="ghost">+ Region</button>
+          <button id="reset-view" class="ghost">Reset view</button>
+          <span class="muted" id="preview-note"></span>
+        </div>
+        <div id="entity-list"></div>
+        <div id="map"></div>
+        <div class="panel" id="entity-editor" style="display:none;margin-top:8px">
+          <h3 id="entity-title">Selected</h3>
+          <div id="entity-body"></div>
+        </div>
+      </div>
+
+      <div class="panel" id="run-monitor" data-collapse="monitor" style="display:none">
+        <h3>Run monitor</h3>
+        <div class="runhead">
+          <span id="rm-title" class="muted"></span>
+          <span class="spacer"></span>
+          <span id="rm-status" class="badge">—</span>
+          <button id="rm-stop" class="ghost">Stop</button>
+        </div>
+        <div class="muted" id="rm-progress" style="padding:4px 2px"></div>
+        <div class="rmgrid">
+          <div><div class="muted">cost / order</div><div id="rm-cost" class="rmchart"></div></div>
+          <div><div class="muted">service (on-time / lost sales)</div><div id="rm-service" class="rmchart"></div></div>
+          <div><div class="muted">warehouse utilization</div><div id="rm-util" class="rmchart"></div></div>
+          <div><div class="muted">SKU stockout share</div><div id="rm-stockout" class="rmchart"></div></div>
+        </div>
+        <div id="rm-final" class="muted" style="padding:6px 2px"></div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="panel" data-collapse="lifecycle">
+        <h3>Order lifecycle — click a step to edit its settings</h3>
+        <div id="state-machine"></div>
+      </div>
+      <div class="panel">
+        <h3>Validation</h3>
+        <div id="validation" class="muted">—</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================== RUNS TAB ============================== -->
+<div class="tabpane" id="tab-runs">
+  <div class="editorbar">
+    <button id="refresh-runs" class="ghost">↻ Refresh</button>
+    <span class="spacer"></span>
+    <span class="muted">name</span>
+    <input id="cmp-name" placeholder="comparison name" style="width:180px">
+    <button id="compare-sel">Compare selected →</button>
+  </div>
+  <div class="twocol">
+    <div class="panel">
+      <h3>Runs — tick to compare, click to open</h3>
+      <div id="runs-list"></div>
+    </div>
+    <div class="panel" id="run-detail" style="display:none">
+      <h3 id="rd-title">Run</h3>
+      <div class="muted" id="rd-metrics"></div>
+      <div class="runhead"><button id="rd-inspect" class="ghost">Open inspector</button>
+        <a id="rd-inspect-link" target="_blank" class="muted" style="display:none">new tab ↗</a></div>
+      <iframe id="rd-frame" class="iframebig" style="display:none"></iframe>
+      <h4 style="margin:10px 6px 2px">Analysis (per day)</h4>
+      <div class="biggrid">
+        <div><div class="muted">orders: created vs delivered</div><div id="ra-orders" class="bigchart"></div></div>
+        <div><div class="muted">on-time rate &amp; plan-fact gap (days; &lt;0 = early)</div><div id="ra-ontime" class="bigchart"></div></div>
+        <div><div class="muted">cost per day (components)</div><div id="ra-cost" class="bigchart"></div></div>
+        <div><div class="muted">parcels / order &amp; lost sales</div><div id="ra-split" class="bigchart"></div></div>
+        <div><div class="muted" id="ra-late-title">lateness distribution (how late, in days)</div><div id="ra-late" class="bigchart"></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ========================== COMPARISONS TAB ========================== -->
+<div class="tabpane" id="tab-comparisons">
+  <div class="twocol">
+    <div class="panel">
+      <h3>Comparisons</h3>
+      <div id="comparisons-list"></div>
+      <div class="muted" id="comparisons-empty">Select runs in the Runs tab and press “Compare selected”.</div>
+    </div>
+    <div class="panel" id="comparison-detail" style="display:none">
+      <h3 id="cd-title">Comparison</h3>
+      <div id="cd-table"></div>
+      <div class="biggrid">
+        <div><div class="muted">on-time rate / day</div><div id="cm-ontime" class="bigchart"></div></div>
+        <div><div class="muted">total cost / day</div><div id="cm-cost" class="bigchart"></div></div>
+        <div><div class="muted">plan-fact gap (days) / day</div><div id="cm-gap" class="bigchart"></div></div>
+        <div><div class="muted">cost/order vs on-time (Pareto)</div><div id="cm-pareto" class="bigchart"></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/studio.js"></script>
+</body></html>

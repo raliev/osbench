@@ -1,0 +1,55 @@
+# demo_heavy — high-volume stress configuration (not primarily for the inspector map).
+#
+# CASE: a large order stream on a sizeable network. ~5000 orders/day over 30 days is on
+# the order of 150k orders and ~250k order lines — enough to exercise warehouse capacity
+# queues, carrier limits, replenishment cadence, and to make the aggregate dashboards /
+# compare statistics meaningful. Six warehouses are spread across the plane so demand is
+# genuinely distributed.
+#
+# WHY SEPARATE: the small demos are tuned for a legible map with a handful of points per
+# day; this one is tuned for throughput and realism of load. On the inspector the per-day
+# cloud is dense (thousands of points) — prefer the live dashboard, report, and compare
+# here. NOTE: pure-Python v1 runs this in roughly a minute; per-SKU inventory detail is
+# auto-enabled (1500*6*30 cells <= 2M). Pass --no-inventory-detail to skip it if you only
+# need metrics.
+name: demo_heavy
+description: "High-volume stress scenario (~160k orders). Not about policy quality — it exercises the dashboards, report and compare paths at scale and checks throughput."
+sim_days: 30
+warmup_days: 5
+geo: { mode: plane, plane_size: 1000.0 }
+region_radius_km: 40.0
+regions:
+  - { region_id: 0, name: R0, x: 150.0, y: 150.0, population_weight: 1.0 }
+  - { region_id: 1, name: R1, x: 850.0, y: 150.0, population_weight: 1.0 }
+  - { region_id: 2, name: R2, x: 150.0, y: 850.0, population_weight: 0.9 }
+  - { region_id: 3, name: R3, x: 850.0, y: 850.0, population_weight: 0.9 }
+  - { region_id: 4, name: R4, x: 500.0, y: 500.0, population_weight: 1.4 }
+  - { region_id: 5, name: R5, x: 500.0, y: 150.0, population_weight: 0.8 }
+  - { region_id: 6, name: R6, x: 150.0, y: 500.0, population_weight: 0.8 }
+  - { region_id: 7, name: R7, x: 850.0, y: 500.0, population_weight: 0.8 }
+warehouses:
+  - { warehouse_id: 0, name: W0, x: 250.0, y: 250.0, capacity_lines_per_day: 20000, rank: 0.6 }
+  - { warehouse_id: 1, name: W1, x: 750.0, y: 250.0, capacity_lines_per_day: 20000, rank: 0.6 }
+  - { warehouse_id: 2, name: W2, x: 250.0, y: 750.0, capacity_lines_per_day: 20000, rank: 0.5 }
+  - { warehouse_id: 3, name: W3, x: 750.0, y: 750.0, capacity_lines_per_day: 20000, rank: 0.5 }
+  - { warehouse_id: 4, name: W4, x: 500.0, y: 500.0, capacity_lines_per_day: 24000, rank: 0.7 }
+  - { warehouse_id: 5, name: W5, x: 500.0, y: 250.0, capacity_lines_per_day: 16000, rank: 0.5 }
+tariffs:
+  zone_bounds_km: [50.0, 300.0, 1000.0, 1000000000.0]
+  cost_by_zone: [3.0, 5.0, 7.0, 10.0]
+  per_kg_by_zone: [0.1, 0.2, 0.3, 0.5]
+  transit_days_by_zone: [1, 2, 4, 7]
+sku:
+  n_sku: 1500
+  zipf_a: 1.1
+  n_categories: 8
+suppliers:
+  - { supplier_id: 0, name: S0, unit_price: 10.0, moq: 100, lead_time_days: 7, capacity_per_period: 5000000 }
+  - { supplier_id: 1, name: S1, unit_price: 11.5, moq: 1,   lead_time_days: 4, capacity_per_period: 2000000 }
+demand:
+  base_orders_per_day: 5000
+  lines_per_order_mean: 1.6
+  qty_max: 3
+promise: { method: transit_plus_buffer, buffer_days: 2, min_processing_days: 1, cap_days: 10 }
+deferral: { mode: none }
+initial_cover_days: 14

@@ -1,0 +1,52 @@
+# demo_two_cities — small, built for visualization and demos.
+#
+# CASE: two geographically separate markets ("cities"). City A (bottom-left) has its
+# own customers and two warehouses; City B (top-right) has its own customers and a
+# single warehouse. Intra-city distances are tiny (zone 0-1), but shipping across the
+# map is far (zone 2) and deliberately expensive here. The right behavior is that each
+# city is served locally; cross-city shipping only happens when a local warehouse runs
+# out — and then it is visibly costly/slow on the inspector.
+#
+# WHY SEPARATE: it isolates the "locality" effect — clustered supply and demand with a
+# long, pricey link between clusters. It is the natural stress case for consolidation,
+# for cross-city spillover, and for seeing what a single-warehouse city does under a
+# warehouse outage. Contrast with demo_contested, where the two warehouses compete for
+# the *same* customers rather than owning disjoint markets.
+name: demo_two_cities
+description: "Two separate markets, each served locally; cross-city shipping is far and expensive. Tests that sourcing keeps demand local and never ships across the gap unnecessarily."
+sim_days: 45
+warmup_days: 7
+geo: { mode: plane, plane_size: 1000.0 }
+region_radius_km: 60.0             # tight per-city clouds
+regions:
+  # City A cloud (bottom-left).
+  - { region_id: 0, name: A_North, x: 200.0, y: 240.0, population_weight: 1.0 }
+  - { region_id: 1, name: A_South, x: 230.0, y: 180.0, population_weight: 0.9 }
+  # City B cloud (top-right).
+  - { region_id: 2, name: B_Core,  x: 820.0, y: 820.0, population_weight: 1.3 }
+warehouses:
+  # City A has two warehouses (redundancy); City B has only one (single point of failure).
+  - { warehouse_id: 0, name: A1, x: 170.0, y: 230.0, capacity_lines_per_day: 300, rank: 0.7 }
+  - { warehouse_id: 1, name: A2, x: 250.0, y: 170.0, capacity_lines_per_day: 300, rank: 0.6 }
+  - { warehouse_id: 2, name: B1, x: 820.0, y: 820.0, capacity_lines_per_day: 400, rank: 0.6 }
+tariffs:
+  # Steeper far zones make cross-city shipping clearly expensive and slow.
+  zone_bounds_km: [50.0, 300.0, 1000.0, 1000000000.0]
+  cost_by_zone: [3.0, 5.0, 12.0, 20.0]
+  per_kg_by_zone: [0.1, 0.2, 0.5, 0.9]
+  transit_days_by_zone: [1, 2, 5, 8]
+sku:
+  n_sku: 80
+  zipf_a: 1.1
+  n_categories: 4
+suppliers:
+  - { supplier_id: 0, name: S0, unit_price: 10.0, moq: 20, lead_time_days: 6, capacity_per_period: 300000 }
+demand:
+  base_orders_per_day: 150
+  lines_per_order_mean: 1.4
+  qty_max: 3
+promise: { method: transit_plus_buffer, buffer_days: 1, min_processing_days: 1, cap_days: 12 }
+deferral: { mode: none }
+initial_cover_days: 25
+# To showcase cross-city spillover, enable a City-B outage, e.g. via a scenario copy:
+# shocks: { enabled: true, warehouse_outage_id: 2, warehouse_outage_days: 7, warehouse_outage_start_day: 20 }

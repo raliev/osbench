@@ -1,0 +1,29 @@
+name: tiny
+description: "Minimal preset (2 regions, 2 warehouses, 50 SKUs) for unit tests and debugging the visualization — runs in seconds."
+sim_days: 30
+warmup_days: 7
+geo: { mode: plane, plane_size: 1000.0 }
+region_radius_km: 15.0
+regions:
+  - { region_id: 0, name: R0, x: 250.0, y: 250.0, population_weight: 1.0 }
+  - { region_id: 1, name: R1, x: 750.0, y: 750.0, population_weight: 0.8 }
+warehouses:
+  - { warehouse_id: 0, name: W0, x: 300.0, y: 300.0, capacity_lines_per_day: 200, rank: 0.7 }
+  - { warehouse_id: 1, name: W1, x: 700.0, y: 700.0, capacity_lines_per_day: 200, rank: 0.5 }
+tariffs:
+  zone_bounds_km: [50.0, 300.0, 1000.0, 1000000000.0]
+  cost_by_zone: [3.0, 5.0, 7.0, 10.0]
+  per_kg_by_zone: [0.1, 0.2, 0.3, 0.5]
+  transit_days_by_zone: [1, 2, 4, 7]
+sku:
+  n_sku: 50
+  zipf_a: 1.1
+  n_categories: 3
+suppliers:
+  - { supplier_id: 0, name: S0, unit_price: 10.0, moq: 10, lead_time_days: 5, capacity_per_period: 100000 }
+demand:
+  base_orders_per_day: 20
+  lines_per_order_mean: 1.6
+promise: { method: transit_plus_buffer, buffer_days: 1, min_processing_days: 1, cap_days: 10 }
+deferral: { mode: none }
+initial_cover_days: 14

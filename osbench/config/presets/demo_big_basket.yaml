@@ -1,0 +1,47 @@
+# demo_big_basket — small, built for visualization and demos.
+#
+# CASE: multi-item orders. The average basket is ~3-4 lines (lines_per_order_mean 3.5)
+# with quantities up to 5, and — crucially — each warehouse stocks only ~70% of the
+# catalog (assortment_fraction 0.7). So a single order frequently needs SKUs that no
+# one warehouse carries in full, forcing the sourcing policy to either split the order
+# across warehouses (extra parcels + split penalty) or leave lines unsourced. This is
+# where split_rate, parcels-per-order, and the split-penalty trade-off come alive.
+#
+# WHY SEPARATE: every other demo keeps baskets near 1 line to isolate geography. This
+# one does the opposite — geography is simple (a triangle of three warehouses), and the
+# whole point is multi-line sourcing and consolidation. Watch an order in the inspector:
+# its lines fan out to different warehouses, and the chronology shows multiple parcels.
+name: demo_big_basket
+description: "Large multi-item baskets (~3.5 lines/order) with partial assortment (each warehouse stocks only a subset of SKUs). Orders cannot be fulfilled from one site, so they split across warehouses -> high split rate. Stresses the candidate engine and split-penalty handling; good for watching parcels-per-order and the backlog build up when pick capacity is tight."
+sim_days: 45
+warmup_days: 7
+geo: { mode: plane, plane_size: 1000.0 }
+region_radius_km: 120.0
+regions:
+  - { region_id: 0, name: West,   x: 250.0, y: 500.0, population_weight: 1.0 }
+  - { region_id: 1, name: East,   x: 750.0, y: 500.0, population_weight: 1.0 }
+  - { region_id: 2, name: Center, x: 500.0, y: 550.0, population_weight: 1.2 }
+warehouses:
+  # Triangle; each warehouse carries only a partial catalog (see assortment_fraction),
+  # which is what forces multi-line orders to split.
+  - { warehouse_id: 0, name: W0, x: 250.0, y: 250.0, capacity_lines_per_day: 600, rank: 0.6, assortment_fraction: 0.7 }
+  - { warehouse_id: 1, name: W1, x: 750.0, y: 250.0, capacity_lines_per_day: 600, rank: 0.6, assortment_fraction: 0.7 }
+  - { warehouse_id: 2, name: W2, x: 500.0, y: 780.0, capacity_lines_per_day: 600, rank: 0.6, assortment_fraction: 0.7 }
+tariffs:
+  zone_bounds_km: [50.0, 300.0, 1000.0, 1000000000.0]
+  cost_by_zone: [3.0, 5.0, 7.0, 10.0]
+  per_kg_by_zone: [0.1, 0.2, 0.3, 0.5]
+  transit_days_by_zone: [1, 2, 4, 7]
+sku:
+  n_sku: 200                        # bigger catalog so partial assortment bites
+  zipf_a: 1.05                      # flatter popularity -> more distinct SKUs per basket
+  n_categories: 6
+suppliers:
+  - { supplier_id: 0, name: S0, unit_price: 10.0, moq: 30, lead_time_days: 6, capacity_per_period: 400000 }
+demand:
+  base_orders_per_day: 120
+  lines_per_order_mean: 3.5         # large baskets: the defining feature of this config
+  qty_max: 5
+promise: { method: transit_plus_buffer, buffer_days: 2, min_processing_days: 1, cap_days: 12 }
+deferral: { mode: none }
+initial_cover_days: 30

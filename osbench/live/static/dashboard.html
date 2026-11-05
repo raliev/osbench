@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>osbench — live monitoring</title>
+  <script src="/plotly.min.js"></script>
+  <style>
+    :root { --bg:#0e1117; --panel:#161b22; --fg:#e6edf3; --muted:#8b949e; --accent:#2f81f7; --red:#f85149; --green:#3fb950; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.4 system-ui, sans-serif; }
+    header { display:flex; align-items:center; gap:16px; padding:10px 16px; background:var(--panel); border-bottom:1px solid #30363d; position:sticky; top:0; z-index:10; }
+    header .title { font-weight:600; font-size:15px; }
+    header .stat { color:var(--muted); }
+    header .stat b { color:var(--fg); }
+    header .spacer { flex:1; }
+    #status { padding:3px 10px; border-radius:4px; background:#21262d; font-weight:600; }
+    #status.running { color:var(--green); } #status.stopping,#status.stopped { color:var(--red); } #status.done { color:var(--accent); }
+    button#stop { background:var(--red); color:#fff; border:none; padding:7px 16px; border-radius:5px; font-weight:600; cursor:pointer; }
+    button#stop:disabled { opacity:.4; cursor:default; }
+    .grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; padding:10px; }
+    .panel { background:var(--panel); border:1px solid #30363d; border-radius:6px; padding:6px; }
+    .panel h3 { margin:2px 6px 4px; font-size:12px; color:var(--muted); font-weight:600; }
+    .chart { width:100%; height:220px; }
+    .wide { grid-column: span 2; }
+    #map .chart { height:360px; }
+    #drill { grid-column: 1 / -1; display:none; }
+    #drill.show { display:block; }
+    #drill .chart { height:260px; }
+    .hint { color:var(--muted); font-size:11px; margin:0 6px 4px; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="title">osbench</span>
+    <span class="stat">scenario <b id="h-preset">—</b></span>
+    <span class="stat">policy <b id="h-policy">—</b></span>
+    <span class="stat">day <b id="h-day">0</b></span>
+    <span class="stat">orders <b id="h-done">0</b>/<b id="h-total">0</b></span>
+    <span class="stat">ETA <b id="h-eta">—</b></span>
+    <span class="spacer"></span>
+    <span id="status" class="running">running</span>
+    <button id="stop">Stop</button>
+  </header>
+
+  <div class="grid">
+    <div class="panel"><h3>Cost per order</h3><div id="c-cost" class="chart"></div></div>
+    <div class="panel"><h3>Service: on-time rate / lost sales</h3><div id="c-service" class="chart"></div></div>
+    <div class="panel"><h3>Cost components (latest)</h3><div id="c-comp" class="chart"></div></div>
+
+    <div class="panel"><h3>Warehouse utilization</h3><div id="c-util" class="chart"></div></div>
+    <div class="panel"><h3>Queue (parcels in progress)</h3><div id="c-queue" class="chart"></div></div>
+    <div class="panel"><h3>Inventory: share of SKUs in stockout</h3><div id="c-stockout" class="chart"></div></div>
+
+    <div class="panel wide" id="map"><h3>Network map (click a warehouse for details)</h3><div id="c-map" class="chart"></div></div>
+    <div class="panel"><h3>Performance</h3><div id="c-compute" class="chart"></div></div>
+
+    <div class="panel" id="drill"><h3 id="drill-title">Warehouse —</h3><p class="hint">Click another warehouse on the map to switch the details.</p><div id="c-drill" class="chart"></div></div>
+  </div>
+
+  <script src="/dashboard.js"></script>
+</body>
+</html>

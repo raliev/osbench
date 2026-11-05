@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><title>osbench inspector</title>
+<script src="/plotly.min.js"></script>
+<style>
+:root{--bg:#0e1117;--panel:#161b22;--fg:#e6edf3;--muted:#8b949e;--accent:#2f81f7;--line:#30363d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.45 system-ui,sans-serif}
+header{display:flex;align-items:center;gap:16px;padding:9px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+.title{font-weight:600;font-size:15px}.muted{color:var(--muted)}
+.sliderrow{display:flex;align-items:center;gap:12px;padding:8px 16px;border-bottom:1px solid var(--line)}
+input[type=range]{flex:1}
+input[type=number]{background:#21262d;color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:4px 8px;width:110px}
+button{background:var(--accent);color:#fff;border:none;padding:6px 12px;border-radius:5px;cursor:pointer}
+.wrap{display:grid;grid-template-columns:1.4fr 1fr;gap:10px;padding:10px;align-items:start}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:10px}
+.panel h3{margin:2px 6px 6px;font-size:13px}
+.chart{width:100%;height:200px}
+#c-map{height:560px}
+table{border-collapse:collapse;width:100%;font-size:12px}
+td,th{padding:2px 8px;text-align:left;border-bottom:1px solid #21262d}
+th{color:var(--muted)}
+.clickable{color:var(--accent);cursor:pointer;text-decoration:underline dotted}
+.chip{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11px;font-weight:600}
+.ok{background:#193d26;color:#3fb950}.lost{background:#3d1b1b;color:#f85149}
+.split{background:#3d320f;color:#d29922}.partial{background:#2d2440;color:#a371f7}
+.transit{background:#10243d;color:#58a6ff}.pending{background:#3d320f;color:#d29922}
+.late{background:#3d1b1b;color:#f0883e}
+.sumgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:6px;margin:4px 6px}
+.sumcard{background:var(--panel2,#161b22);border:1px solid #30363d;border-radius:6px;padding:6px 8px}
+.sumcard .v{font-size:16px;font-weight:700}.sumcard .k{color:var(--muted);font-size:11px}
+.hint{color:var(--muted);padding:6px}
+.right{max-height:calc(100vh - 110px);overflow:auto}
+</style></head>
+<body>
+<header>
+  <span class="title">osbench inspector</span>
+  <span class="muted">day <b id="day-label">0</b> / <span id="day-max">0</span></span>
+  <span class="muted">orders this day: <b id="n-orders">0</b></span>
+  <span class="muted" id="detail-note"></span>
+</header>
+<div class="sliderrow">
+  <span class="muted">time</span>
+  <input type="range" id="day-slider" min="0" max="0" value="0" step="1">
+  <span class="muted">color:</span>
+  <select id="color-mode" style="background:#21262d;color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:4px">
+    <option value="status">by outcome</option>
+    <option value="lateness">by lateness (days)</option>
+    <option value="cost">by cost to company</option>
+    <option value="warehouse">by warehouse</option>
+  </select>
+  <span class="muted">order:</span>
+  <input type="number" id="order-input" placeholder="order_id" min="0">
+  <button id="order-btn">Open</button>
+</div>
+<div id="map-legend" class="muted" style="font-size:11px;padding:2px 12px 6px;min-height:14px"></div>
+<div class="wrap">
+  <div class="panel"><h3>Network map — click an order point or a warehouse</h3>
+    <div id="c-map" class="chart"></div>
+  </div>
+  <div class="right">
+    <div class="panel" id="p-order"><h3>Order</h3><div class="hint">Click an order point on the map (or type an id above).</div></div>
+    <div class="panel" id="p-wh" style="display:none"><h3>Warehouse</h3><div id="wh-body"></div></div>
+    <div class="panel" id="p-sku" style="display:none"><h3>SKU</h3><div id="sku-body"></div></div>
+  </div>
+</div>
+<script src="/replay.js"></script>
+</body></html>

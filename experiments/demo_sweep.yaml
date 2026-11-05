@@ -1,0 +1,22 @@
+# Example sweep: a few demo scenarios plus a load x inventory-cover sensitivity grid,
+# compared across several policies and seeds. Run with:
+#   osbench sweep --config experiments/demo_sweep.yaml --out sweeps/demo
+name: demo_sweep
+
+# Plain scenarios (preset names or YAML paths).
+scenarios:
+  - demo_contested
+  - demo_scarce
+
+# Sensitivity grid: expand a base scenario over axes (Cartesian product).
+# Each cell becomes a scenario named like "small__base_orders_per_day400__initial_cover_days7".
+grid:
+  base: small
+  axes:
+    demand.base_orders_per_day: [200, 400]
+    initial_cover_days: [7, 14, 30]
+
+policies: [nearest, cheapest_myopic, weighted_score, dtlp_bidprice]
+replenishment: base_stock
+seeds: [0, 1, 2, 3, 4]
+baseline: nearest

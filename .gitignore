@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# Generated run artifacts and user data
+runs/
+sweeps/
+scenarios/
+weights.json
+*.parquet
+
+# IDE / editor / local tooling
+.idea/
+.vscode/
+.claude/
+.DS_Store

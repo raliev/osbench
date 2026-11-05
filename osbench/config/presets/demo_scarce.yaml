@@ -1,0 +1,47 @@
+# demo_scarce — small, tuned so the *sourcing policy choice actually matters*.
+#
+# CASE: tight inventory with slow replenishment and imbalanced regional demand. Initial
+# stock covers only ~8 days, supplier lead time is long (14 days), and one region (East)
+# pulls far more demand than its nearest warehouse can keep stocked. A myopic policy that
+# always ships from the cheapest warehouse drains that warehouse and then loses sales or
+# pays for long cross-network shipments; a forward-looking policy (weighted_score, LP
+# bid-price) that reserves scarce inventory does better. This is the config to use when
+# comparing policies, watching lost_sales rise, and seeing gap_to_hindsight widen.
+#
+# WHY SEPARATE: the viz demos keep stock ample on purpose so geography reads cleanly.
+# Here scarcity is the whole point — the interesting signal is *which* policy copes, not
+# where the customers are. Run several policies and `osbench compare` them.
+name: demo_scarce
+description: "Tight stock (small initial cover) with slow replenishment and imbalanced demand, so lost sales rise and the sourcing policy choice starts to matter. A scarcity regime for the LP-vs-heuristic question."
+sim_days: 45
+warmup_days: 7
+geo: { mode: plane, plane_size: 1000.0 }
+region_radius_km: 90.0
+regions:
+  # East carries the heaviest demand but its local warehouse (W1) is capacity/stock-tight.
+  - { region_id: 0, name: West,   x: 250.0, y: 500.0, population_weight: 0.8 }
+  - { region_id: 1, name: East,   x: 750.0, y: 500.0, population_weight: 2.0 }
+  - { region_id: 2, name: Center, x: 500.0, y: 500.0, population_weight: 1.0 }
+warehouses:
+  - { warehouse_id: 0, name: W0, x: 250.0, y: 500.0, capacity_lines_per_day: 500, rank: 0.6 }
+  - { warehouse_id: 1, name: W1, x: 750.0, y: 500.0, capacity_lines_per_day: 300, rank: 0.6 }
+  - { warehouse_id: 2, name: W2, x: 500.0, y: 500.0, capacity_lines_per_day: 400, rank: 0.6 }
+tariffs:
+  zone_bounds_km: [50.0, 300.0, 1000.0, 1000000000.0]
+  cost_by_zone: [3.0, 5.0, 7.0, 10.0]
+  per_kg_by_zone: [0.1, 0.2, 0.3, 0.5]
+  transit_days_by_zone: [1, 2, 4, 7]
+sku:
+  n_sku: 150
+  zipf_a: 1.2                       # heavier head -> a few SKUs dominate and go scarce
+  n_categories: 5
+suppliers:
+  # Single slow supplier so replenishment lags demand and stock stays tight.
+  - { supplier_id: 0, name: S0, unit_price: 10.0, moq: 40, lead_time_days: 14, capacity_per_period: 150000 }
+demand:
+  base_orders_per_day: 200
+  lines_per_order_mean: 1.5
+  qty_max: 3
+promise: { method: transit_plus_buffer, buffer_days: 1, min_processing_days: 1, cap_days: 10 }
+deferral: { mode: none }
+initial_cover_days: 8              # deliberately thin: scarcity drives the outcome
