@@ -23,6 +23,11 @@ STREAM_NAMES: tuple[str, ...] = (
     "inventory_error",
     "customer_choice",
     "policy",
+    # Appended at the end so existing streams' child SeedSequences are unchanged
+    # (SeedSequence.spawn is per-index, independent of the total count).
+    "demand_cancel",
+    "sync_jitter",
+    "transfer_leadtime",
 )
 
 _INDEX = {name: i for i, name in enumerate(STREAM_NAMES)}

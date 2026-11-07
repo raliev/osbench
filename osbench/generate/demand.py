@@ -99,6 +99,18 @@ def build_orders(world: World, cfg: ScenarioConfig, hub: RngHub) -> pd.DataFrame
     line_sku = sku_by_rank[sku_rank]
     line_qty = basket.integers(1, cfg.demand.qty_max + 1, size=total_lines).astype(np.int32)
 
+    # Customer cancellation (pre-generated so it is CRN-stable and order-aligned). Drawn only
+    # when cancel_rate > 0, so default scenarios see no extra draws and stay byte-identical.
+    order_cancel_at = np.full(n_total, -1, dtype=np.int64)
+    if cfg.demand.cancel_rate > 0:
+        cg = hub.generator("demand_cancel")
+        will_cancel = cg.random(n_total) < cfg.demand.cancel_rate
+        offset_min = cg.random(n_total) * cfg.demand.cancel_within_hours * 60.0
+        order_cancel_at = np.where(
+            will_cancel, created_all + offset_min.astype(np.int64), -1
+        ).astype(np.int64)
+    line_cancel_at = np.repeat(order_cancel_at, n_lines)
+
     return pd.DataFrame(
         {
             "order_id": line_order,
@@ -109,6 +121,7 @@ def build_orders(world: World, cfg: ScenarioConfig, hub: RngHub) -> pd.DataFrame
             "dest_y": line_dest_y.astype(np.float64),
             "sku_id": line_sku.astype(np.int64),
             "qty": line_qty,
+            "cancel_at_min": line_cancel_at.astype(np.int64),
         }
     )
 
@@ -145,5 +158,6 @@ def _empty_orders() -> pd.DataFrame:
         "dest_y": np.float64,
         "sku_id": np.int64,
         "qty": np.int32,
+        "cancel_at_min": np.int64,
     }
     return pd.DataFrame({k: np.array([], dtype=v) for k, v in cols.items()})

@@ -11,9 +11,17 @@ import pandas as pd
 from ..config.policy import ReplenishmentPolicyConfig, SourcingPolicyConfig
 from ..journal.schema import JType
 from ..journal.writer import JournalWriter
-from ..registry import get_replenishment, get_sourcing
+from ..registry import get_replenishment, get_sourcing, get_transfer
 from ..rng.counter_based import make_generator
-from ..types import Assignment, CancelPoint, LineAlloc, Order, OrderLine, PolicyContext
+from ..types import (
+    Assignment,
+    CancelPoint,
+    LineAlloc,
+    Order,
+    OrderLine,
+    PolicyContext,
+    TransferContext,
+)
 from .events import Ev, EventQueue
 from .network import Network
 from .promise import accept_probability, compute_promise_min
@@ -77,6 +85,7 @@ class SimEngine:
         self._supplier_price = sup.unit_price
         self._supplier_moq = sup.moq
         self._supplier_lead = sup.lead_time_days
+        self._supplier_lead_std = float(sup.lead_time_std_days)
         self._late_rate = float(self.cfg.shortage.penalty_late_per_day)
 
         # Warehouse outage shock: the warehouse is masked out of ATP within the window.
@@ -118,6 +127,33 @@ class SimEngine:
         self._defer_max = int(dc.max_waiting_per_sku)
         self._inv_accuracy = float(self.cfg.inventory_accuracy.accuracy)
         self._inv_err_mean = float(self.cfg.inventory_accuracy.error_mean)
+
+        # Stock-sync latency (2.12): OMS reads a snapshot that lags WMS debits/receipts. When off,
+        # the OMS view IS the live book (byte-identical to before); when on, it is inv.snapshot and
+        # delayed deltas are applied via Ev.SYNC_APPLY. Reservation release is deferred to the
+        # moment a pick's debit reaches the snapshot, so ATP_OMS = snapshot - reserved - safety
+        # never double-counts regardless of lag.
+        sy = self.cfg.inventory_sync
+        self._sync_on = sy.mode != "none"
+        self._sync_mode = sy.mode
+        self._sync_period = int(sy.period_minutes)
+        self._sync_jitter = int(sy.jitter_minutes)
+        self._sync_lag_picks = sy.lagged_events in ("picks", "all")
+        self._sync_lag_receipts = sy.lagged_events in ("receipts", "all")
+        # Per-warehouse timing parameter: the fixed lag (fixed_lag) or the refresh period (periodic).
+        _base = sy.lag_minutes if sy.mode == "fixed_lag" else sy.period_minutes
+        self._sync_param_wh = np.full(self.net.n_wh, int(_base), np.int64)
+        if sy.per_warehouse:
+            for w, v in sy.per_warehouse.items():
+                if 0 <= int(w) < self.net.n_wh:
+                    self._sync_param_wh[int(w)] = int(v)
+        self._sync_pending: list[tuple[int, int, int, bool]] = []  # (sku, wh, delta, release_resv)
+        self._sync_event_id = 0
+        self._oms_book = self.inv.snapshot if self._sync_on else self.inv.book
+        self.st_short_pick_cause = {"accounting_error": 0, "no_reservation_conflict": 0,
+                                    "stale_snapshot": 0}
+        self._oms_divergence: list[dict] = []  # per-day |snapshot - book| for the divergence metric
+        self._setup_transfers()
         self._deferred: dict[int, dict] = {}          # oi -> {deadline, needed:set[sku], wake}
         self._was_deferred: set[int] = set()
         self._defer_waiters: dict[int, set[int]] = {}  # sku -> set of deferred order ids
@@ -160,6 +196,10 @@ class SimEngine:
         self.st_short_post = 0        # orders a line could not be sourced (point 2)
         self.st_short_pick = 0        # lines short on physical stock at pick (point 3)
         self.st_substituted = 0       # checkout lines swapped for an in-stock SKU
+        self.st_customer_cancel = 0   # orders abandoned by the customer before fulfillment
+        self.st_transfer_cost = 0.0   # total inter-warehouse transfer cost (2.13)
+        self.st_transfer_units = 0    # units moved by transfers
+        self.st_ping_pong_units = 0   # units that reversed a recent move (should be 0 with guards)
         self.wh_wip = np.zeros(n_wh, np.int64)  # parcels in progress (queue proxy)
         self.wh_inbound_tick = np.zeros(n_wh, np.int64)
         self.wh_outbound_tick = np.zeros(n_wh, np.int64)
@@ -176,7 +216,10 @@ class SimEngine:
         self.l_qty = orders["qty"].to_numpy(np.int64)
         self.l_lineid = orders["line_id"].to_numpy(np.int32)
         self.l_wh = np.full(len(orders), -1, np.int16)
-        self.l_term = np.zeros(len(orders), np.uint8)  # 0 none, 1 delivered, 2 cancelled
+        self.l_term = np.zeros(len(orders), np.uint8)  # 0 none, 1 delivered, 2 cancelled, 3 customer-cancelled
+        self.l_reserved = np.zeros(len(orders), np.bool_)  # line currently holds a reservation
+        self.l_picked = np.zeros(len(orders), np.bool_)    # line has been picked (past cancel window)
+        self.l_shipped = np.zeros(len(orders), np.bool_)   # line's parcel has left the warehouse
 
         oid = orders["order_id"].to_numpy(np.int64)
         self.n_orders = int(oid.max()) + 1
@@ -188,6 +231,13 @@ class SimEngine:
         self.o_dest_x = orders["dest_x"].to_numpy(np.float64)[first]
         self.o_dest_y = orders["dest_y"].to_numpy(np.float64)[first]
         self.o_promise = np.full(self.n_orders, -1, np.int64)
+        # Pre-generated customer cancellation time per order (-1 = never). Missing column →
+        # no cancellations (backward compatible with older order files).
+        if "cancel_at_min" in orders.columns:
+            self.o_cancel_at = orders["cancel_at_min"].to_numpy(np.int64)[first]
+        else:
+            self.o_cancel_at = np.full(self.n_orders, -1, np.int64)
+        self.o_cancelled = np.zeros(self.n_orders, np.bool_)
 
     # ------------------------------------------------------------------ run
     def run(self, run_dir: Path) -> dict:
@@ -205,6 +255,8 @@ class SimEngine:
             self.queue.push(day * _MIN_PER_DAY, Ev.REPLENISH_REVIEW, day)
         for oi in range(self.n_orders):
             self.queue.push(int(self.o_created[oi]), Ev.ORDER_CREATED, oi)
+            if self.o_cancel_at[oi] >= 0:
+                self.queue.push(int(self.o_cancel_at[oi]), Ev.CUSTOMER_CANCEL, oi)
         self._guard_stop = False
         if self.live is not None or self.guardrail is not None:
             import time as _time
@@ -237,6 +289,10 @@ class SimEngine:
                 self._on_replenish(t, a)
             elif kind == Ev.RECEIPT:
                 self._on_receipt(t, b)
+            elif kind == Ev.SYNC_APPLY:
+                self._on_sync_apply(b)
+            elif kind == Ev.CUSTOMER_CANCEL:
+                self._on_customer_cancel(t, a)
             elif kind == Ev.ORDER_CREATED:
                 self._on_order_created(t, a)
             elif kind == Ev.ENTER_SOURCING:
@@ -262,6 +318,7 @@ class SimEngine:
         self._finalize_unfulfilled(min(self._last_t if hasattr(self, "_last_t") else horizon, hard_cap))
         self.journal.close()
         self._write_inventory_daily(run_dir)
+        self._write_engine_extra(run_dir)
         if self.live is not None:
             self.live.control.state = self.status
             self.live.finished = True
@@ -351,6 +408,36 @@ class SimEngine:
                 self._guard_stop = True
                 if self.live is not None:
                     self.live.control.state = "aborted"
+
+    def _on_customer_cancel(self, t: int, oi: int) -> None:
+        """The customer abandons the order before it is fulfilled (2.9 is about OUR failures;
+        this is the customer's own choice). Lines already shipped cannot be recalled; every
+        other active line is released — crucially, any reservation it holds is freed, so a unit
+        bound early (reservation on) is wasted for exactly the hold-to-cancel interval, while a
+        unit bound late (reservation off) was never taken out of circulation.
+
+        Customer cancellations are NOT lost sales: the demand withdrew itself, so these lines
+        count in neither the fill-rate numerator nor its denominator.
+        """
+        if self.o_cancelled[oi]:
+            return
+        s, e = int(self.o_start[oi]), int(self.o_end[oi])
+        active = [gi for gi in range(s, e)
+                  if self.l_term[gi] == 0 and not self.l_picked[gi] and not self.l_shipped[gi]]
+        if not active:
+            return  # nothing left to cancel (already shipped / delivered / lost)
+        self.o_cancelled[oi] = True
+        self.st_customer_cancel += 1
+        for gi in active:
+            if self.l_reserved[gi]:
+                wh = int(self.l_wh[gi])
+                self.inv.reserved[int(self.l_sku[gi]), wh] -= int(self.l_qty[gi])
+                self.l_reserved[gi] = False
+            self.l_term[gi] = 3  # customer-cancelled terminal state
+        self.journal.log(
+            t, JType.CUSTOMER_CANCELLED, order_id=oi, parcel=int(CancelPoint.CUSTOMER),
+            qty=len(active),
+        )
 
     # ------------------------------------------------------------------ handlers
     def _on_order_created(self, t: int, oi: int) -> None:
@@ -445,9 +532,10 @@ class SimEngine:
     def _atp(self) -> np.ndarray:
         """ATP per atp.method: on_hand_only = book - reserved; basic / cumulative also keep the
         safety stock back (cumulative adds inbound receipts on top, see _coverage_atp)."""
+        book = self._oms_book  # the live book (sync off) or the lagged OMS snapshot (sync on)
         if self._atp_method == "on_hand_only":
-            return np.clip(self.inv.book - self.inv.reserved, 0, None)
-        return self.inv.atp()
+            return np.clip(book - self.inv.reserved, 0, None)
+        return np.clip(book - self.inv.reserved - self.inv.safety, 0, None)
 
     def _coverage_atp(self, t: int) -> np.ndarray:
         """ATP used for promise/coverage decisions. method=cumulative adds inbound receipts
@@ -524,6 +612,8 @@ class SimEngine:
     def _on_sourcing(self, t: int, oi: int) -> None:
         import time
 
+        if self.o_cancelled[oi]:
+            return  # customer walked away while the order waited for a decision
         order = self._make_order(oi)
         atp = self._atp()
         # Warehouse outage: hide the downed warehouse from policies within the window.
@@ -533,7 +623,7 @@ class SimEngine:
         ctx = PolicyContext(
             now_min=t,
             now_day=t // _MIN_PER_DAY,
-            book_onhand=self.inv.book,
+            book_onhand=self._oms_book,
             reserved=self.inv.reserved,
             atp=atp,
             in_transit=self.inv.in_transit,
@@ -730,6 +820,8 @@ class SimEngine:
             self.queue.push(t, Ev.SOURCING_DECISION, oi)
 
     def _on_reserve(self, t: int, oi: int) -> None:
+        if self.o_cancelled[oi]:
+            return  # customer walked away between the decision and the reservation
         s, e = int(self.o_start[oi]), int(self.o_end[oi])
         by_wh: dict[int, list[int]] = {}
         for gi in range(s, e):
@@ -744,6 +836,7 @@ class SimEngine:
             for gi in lines:
                 if self._reserve:
                     self.inv.reserved[self.l_sku[gi], wh] += self.l_qty[gi]
+                    self.l_reserved[gi] = True
                 self._demand_cum[self.l_sku[gi], wh] += self.l_qty[gi]  # realized demand per cell
                 # Record the line -> warehouse assignment for the inspector.
                 self.journal.log(
@@ -758,6 +851,9 @@ class SimEngine:
 
     def _on_admit(self, t: int, oi: int, pidx: int) -> None:
         wh, lines = self._parcels[oi][pidx]
+        if self.o_cancelled[oi]:
+            self.wh_wip[wh] = max(0, self.wh_wip[wh] - 1)  # parcel dissolved by cancellation
+            return
         n_lines = len(lines)
         day = t // _MIN_PER_DAY
         tod = t % _MIN_PER_DAY
@@ -778,22 +874,32 @@ class SimEngine:
         sh = self.cfg.shortage
         kept: list[int] = []
         for gi in lines:
+            if self.l_term[gi] == 3:
+                continue  # customer cancelled this order; its reservation was already released
             sku = int(self.l_sku[gi])
             qty = int(self.l_qty[gi])
             avail = int(self.inv.phys[sku, wh])
             if avail >= qty:
+                self.l_picked[gi] = True  # committed: past the customer-cancel window
                 self.inv.phys[sku, wh] -= qty
                 self.inv.book[sku, wh] -= qty
-                if self._reserve:
-                    self.inv.reserved[sku, wh] -= qty
+                # Mirror the debit to the OMS snapshot, deferring the reservation release to the
+                # moment the debit reaches the snapshot (keeps ATP_OMS consistent under lag, 2.12).
+                self._sync_debit(t, sku, wh, qty, release_resv=self._reserve)
+                self.l_reserved[gi] = False
                 kept.append(gi)
             else:
-                # Point 3 (pick shortage): physical < book (phantom inventory, or a conflict when
-                # reservation is off). Try re-sourcing / backorder, else ship what's there or cancel.
+                # Point 3 (pick shortage): physical < book (phantom inventory, a no-reservation
+                # conflict, or a stale OMS snapshot that oversold). Try re-sourcing / backorder,
+                # else ship what's there or cancel.
                 self.st_short_pick += 1
+                self._attribute_pick_shortage(sku, wh)
                 if self._reserve:
                     self.inv.reserved[sku, wh] -= qty  # release our reservation
+                    self.l_reserved[gi] = False
                 self.inv.book[sku, wh] = int(self.inv.phys[sku, wh])  # reconcile the phantom here
+                if self._sync_on:
+                    self.inv.snapshot[sku, wh] = int(self.inv.phys[sku, wh])  # reconcile OMS too
                 gc = make_generator(self.seed, "customer_choice", (oi, pidx, int(self.l_lineid[gi])))
                 # (a) re-source the line from another warehouse that physically has it.
                 if sh.p_resource > 0 and float(gc.random()) < sh.p_resource:
@@ -801,6 +907,8 @@ class SimEngine:
                     if wh2 is not None:
                         if self._reserve:
                             self.inv.reserved[sku, wh2] += qty
+                            self.l_reserved[gi] = True
+                        self.l_wh[gi] = wh2  # re-sourced: keep the line's warehouse in sync
                         self.wh_wip[wh2] += 1
                         self._parcels[oi].append((wh2, [gi]))
                         self.queue.push(t, Ev.WH_QUEUE_ADMIT, oi, len(self._parcels[oi]) - 1)
@@ -811,6 +919,7 @@ class SimEngine:
                     if eta is not None:
                         if self._reserve:
                             self.inv.reserved[sku, wh] += qty
+                            self.l_reserved[gi] = True
                         self.wh_wip[wh] += 1
                         self._parcels[oi].append((wh, [gi]))
                         self.queue.push(eta + 1, Ev.WH_QUEUE_ADMIT, oi, len(self._parcels[oi]) - 1)
@@ -852,6 +961,8 @@ class SimEngine:
         self.wh_wip[wh] = max(0, self.wh_wip[wh] - 1)
         self.wh_outbound_tick[wh] += 1
         self.st_parcels += 1
+        for gi in lines:
+            self.l_shipped[gi] = True  # in transit: a later customer cancel cannot recall it
         dist = float(self.net.distance_to(float(self.o_dest_x[oi]), float(self.o_dest_y[oi]))[wh])
         zone = int(self.net.shipping.zone(np.array([dist]))[0])
         weight = float(self.net.sku_weight[[self.l_sku[gi] for gi in lines]].sum())
@@ -902,7 +1013,7 @@ class SimEngine:
         return PolicyContext(
             now_min=t,
             now_day=t // _MIN_PER_DAY,
-            book_onhand=self.inv.book,
+            book_onhand=self._oms_book,
             reserved=self.inv.reserved,
             atp=self._atp(),
             in_transit=self.inv.in_transit,
@@ -915,6 +1026,10 @@ class SimEngine:
     def _on_day_roll(self, t: int, day: int) -> None:
         self.wh_lines_used[:] = 0
         self.wh_parcels_used[:] = 0
+        # Start-of-period inter-warehouse rebalancing (2.13): receipts have already landed by now,
+        # transfers run here (before the replenish review at this tick), then orders consume.
+        if self._transfers_on:
+            self._run_transfers(t, day)
         # Periodic policy callback (e.g. LP bid-price recompute).
         if self._period_days and day % self._period_days == 0:
             self.sourcing.on_period_start(self._policy_ctx(t))
@@ -931,6 +1046,9 @@ class SimEngine:
             )
         if self.inventory_detail:
             self._inv_sku_daily.append((day, self.inv.book.copy(), self.inv.phys.copy()))
+        if self._sync_on:  # OMS/WMS gap in units (analog of phantom_inventory_units, 2.12)
+            div = int(np.abs(self.inv.snapshot - self.inv.book).sum())
+            self._oms_divergence.append({"day": day, "divergence_units": div})
 
     def _on_replenish(self, t: int, day: int) -> None:
         position = self.inv.position()
@@ -949,7 +1067,8 @@ class SimEngine:
             po_index = len(self._po)
             self._po.append((sku, wh, q, self._supplier_price))
             self.inv.in_transit[sku, wh] += q
-            eta = t + self._supplier_lead * _MIN_PER_DAY
+            lead_days = self._draw_lead_days(sku, wh, po_index)
+            eta = t + lead_days * _MIN_PER_DAY
             if self._track_inbound:
                 self._inbound_sched.setdefault(sku, []).append([eta, q, wh])
             self.journal.log(
@@ -957,12 +1076,231 @@ class SimEngine:
             )
             self.queue.push(eta, Ev.RECEIPT, -1, po_index)
 
+    # ------------------------------------------------------------------ stock-sync latency (2.12)
+    def _sync_apply_time(self, t: int, wh: int) -> int:
+        """When a WMS event at (t, wh) becomes visible in the OMS snapshot."""
+        param = int(self._sync_param_wh[wh])
+        if param <= 0:
+            at = t  # this warehouse syncs live (e.g. an RDC with per_warehouse 0)
+        elif self._sync_mode == "periodic":
+            at = ((t // param) + 1) * param  # next batch refresh boundary
+        else:  # fixed_lag
+            at = t + param
+        if self._sync_jitter > 0:
+            self._sync_event_id += 1
+            g = make_generator(self.seed, "sync_jitter", (int(wh), self._sync_event_id))
+            at += int(g.integers(0, self._sync_jitter + 1))
+        return at
+
+    def _sync_debit(self, t: int, sku: int, wh: int, qty: int, release_resv: bool) -> None:
+        """A pick debited WMS stock by qty. Mirror it to the OMS snapshot — and, if a reservation
+        is to be released, release it at the SAME moment — immediately or after the sync lag."""
+        if not self._sync_on:
+            if release_resv:
+                self.inv.reserved[sku, wh] -= qty
+            return  # snapshot IS book
+        if not self._sync_lag_picks:
+            self.inv.snapshot[sku, wh] -= qty
+            if release_resv:
+                self.inv.reserved[sku, wh] -= qty
+            return
+        idx = len(self._sync_pending)
+        self._sync_pending.append((sku, wh, -qty, release_resv))
+        self.queue.push(self._sync_apply_time(t, wh), Ev.SYNC_APPLY, -1, idx)
+
+    def _sync_credit(self, t: int, sku: int, wh: int, qty: int) -> None:
+        """A receipt credited WMS stock by qty. Mirror it to the OMS snapshot with the sync lag."""
+        if not self._sync_on:
+            return
+        if not self._sync_lag_receipts:
+            self.inv.snapshot[sku, wh] += qty
+            return
+        idx = len(self._sync_pending)
+        self._sync_pending.append((sku, wh, qty, False))
+        self.queue.push(self._sync_apply_time(t, wh), Ev.SYNC_APPLY, -1, idx)
+
+    def _on_sync_apply(self, idx: int) -> None:
+        sku, wh, delta, release_resv = self._sync_pending[idx]
+        self.inv.snapshot[sku, wh] += delta
+        if release_resv:
+            self.inv.reserved[sku, wh] -= int(-delta)  # delta is the negative debit
+
+    def _attribute_pick_shortage(self, sku: int, wh: int) -> None:
+        """Classify a pick shortage into one of three causes so results can separate them (2.12).
+        A stale OMS snapshot shows more than the WMS book; a no-reservation conflict means two
+        orders claimed the same unit; otherwise it is a WMS accounting error (inventory_accuracy)."""
+        if self._sync_on and int(self.inv.snapshot[sku, wh]) > int(self.inv.book[sku, wh]):
+            self.st_short_pick_cause["stale_snapshot"] += 1
+        elif not self._reserve:
+            self.st_short_pick_cause["no_reservation_conflict"] += 1
+        else:
+            self.st_short_pick_cause["accounting_error"] += 1
+
+    # ------------------------------------------------------------------ transfers (2.13)
+    def _setup_transfers(self) -> None:
+        tc = self.cfg.transfers
+        self._transfers_on = bool(tc.enabled)
+        self._transfer_po: set[int] = set()
+        self._last_transfer_day: dict[tuple[int, int, int], int] = {}  # (sku, fr, to) -> day
+        self._lanes: dict[tuple[int, int], dict] = {}
+        self._transfer_policy = None
+        if not self._transfers_on:
+            return
+        import osbench.policies.transfer  # noqa: F401  (registers the built-in policies)
+        self._transfer_policy = get_transfer(tc.policy)(tc, self.net)
+        self._transfer_review = int(tc.review_days)
+        self._transfer_protect_safety = bool(tc.protect_safety)
+        self._transfer_visible_atp = bool(tc.visible_to_atp)
+        self._transfer_on_outage = tc.on_outage
+        g = tc.guards
+        self._tg_min_qty = max(1, int(g.min_qty))
+        self._tg_max_src = float(g.max_source_share)
+        self._tg_cooldown = int(g.cooldown_days)
+        overrides = {(ln.from_wh, ln.to_wh): ln for ln in tc.lanes}
+        n = self.net.n_wh
+        tiers = [w.tier for w in self.cfg.warehouses]
+        if tc.topology == "explicit":
+            pairs = list(overrides.keys())
+        elif tc.topology == "hub":
+            rdc = [i for i in range(n) if tiers[i] == "rdc"]
+            pairs = [(r, f) for r in rdc for f in range(n) if f != r and tiers[f] == "fdc"]
+        else:  # all_pairs
+            pairs = [(a, b) for a in range(n) for b in range(n) if a != b]
+        for fr, to in pairs:
+            o = overrides.get((fr, to))
+            lead = o.lead_time_days if (o and o.lead_time_days is not None) else self._lane_lead_days(fr, to)
+            self._lanes[(fr, to)] = {
+                "lead": int(lead),
+                "noise": float(o.lead_time_noise_days) if o else 0.0,
+                "cost_per_unit": float(o.cost_per_unit) if o else 0.0,
+                "cost_per_shipment": float(o.cost_per_shipment) if o else 0.0,
+                "cost_per_kg": float(o.cost_per_kg) if o else 0.0,
+                "cap": (o.capacity_units_per_day if (o and o.capacity_units_per_day is not None) else None),
+                "moq": int(o.moq_units) if o else 0,
+                "fill": float(o.fill_rate) if o else 1.0,
+            }
+
+    def _outage_active(self, t: int) -> bool:
+        return self._outage_wh >= 0 and self._outage_start <= t < self._outage_end
+
+    def _wh_distance(self, fr: int, to: int) -> float:
+        if self.net.geo_mode == "plane":
+            return float(np.hypot(self.net.wh_x[fr] - self.net.wh_x[to],
+                                  self.net.wh_y[fr] - self.net.wh_y[to]))
+        from .geometry import distance_km
+        return float(distance_km(np.array([self.net.wh_x[fr]]), np.array([self.net.wh_y[fr]]),
+                                 np.array([self.net.wh_x[to]]), np.array([self.net.wh_y[to]]),
+                                 "haversine")[0])
+
+    def _lane_lead_days(self, fr: int, to: int) -> int:
+        """Default lane lead time = the transit days of the inter-warehouse distance zone."""
+        d = self._wh_distance(fr, to)
+        zone = int(self.net.shipping.zone(np.array([d]))[0])
+        return int(self.net.shipping.days[zone])
+
+    def _run_transfers(self, t: int, day: int) -> None:
+        """At the start of a review period, ask the transfer policy for moves, apply the guards,
+        and execute each: debit the source, put stock in transit to the receiver, charge the lane."""
+        if not self._transfers_on or self._transfer_policy is None:
+            return
+        if day % self._transfer_review != 0:
+            return
+        rate = self._demand_cum / max(1, day)
+        lanes_remaining: dict[tuple[int, int], int] = {}
+        for (fr, to), ln in self._lanes.items():
+            if self._outage_active(t) and self._outage_wh in (fr, to):
+                continue  # a downed warehouse neither sends nor receives (on_outage=hold)
+            lanes_remaining[(fr, to)] = ln["cap"] if ln["cap"] is not None else 10**12
+        ctx = TransferContext(
+            now_day=day, snapshot=self._oms_book, reserved=self.inv.reserved,
+            in_transit=self.inv.in_transit, safety_stock=self.inv.safety, demand_rate=rate,
+            lanes=dict(lanes_remaining), params=self.cfg.transfers.params,
+        )
+        out_cap: dict[tuple[int, int], int] = {}      # (sku, fr) -> remaining allowed out this period
+        fixed_charged: set[tuple[int, int]] = set()   # lanes already charged the per-shipment fee today
+        for mv in self._transfer_policy.decide(ctx):
+            fr, to, sku, qty = int(mv.from_wh), int(mv.to_wh), int(mv.sku_id), int(mv.qty)
+            ln = self._lanes.get((fr, to))
+            if ln is None or (fr, to) not in lanes_remaining:
+                continue
+            if self._tg_cooldown > 0:  # block a reverse move inside the cooldown window
+                rev = self._last_transfer_day.get((sku, to, fr))
+                if rev is not None and day - rev < self._tg_cooldown:
+                    continue
+            avail = int(self.inv.book[sku, fr] - self.inv.reserved[sku, fr])
+            if self._transfer_protect_safety:
+                avail -= int(self.inv.safety[sku, fr])
+            avail = max(0, avail)
+            key = (sku, fr)
+            if key not in out_cap:  # max_source_share of the period-start available stock
+                base = int(self.inv.book[sku, fr] - self.inv.reserved[sku, fr])
+                out_cap[key] = int(self._tg_max_src * max(0, base))
+            qty = min(qty, avail, out_cap[key], lanes_remaining[(fr, to)])
+            if qty < self._tg_min_qty or qty < ln["moq"]:
+                continue
+            # Execute: debit the source (book + physical + OMS snapshot), send to the receiver.
+            self.inv.book[sku, fr] -= qty
+            self.inv.phys[sku, fr] -= qty
+            if self._sync_on:
+                self.inv.snapshot[sku, fr] -= qty
+            out_cap[key] -= qty
+            lanes_remaining[(fr, to)] -= qty
+            delivered = int(qty * ln["fill"])
+            lead = ln["lead"]
+            if ln["noise"] > 0:
+                gid = len(self._po)
+                gn = make_generator(self.seed, "transfer_leadtime", (fr, to, gid))
+                lead = max(1, lead + int(round(float(gn.normal(0.0, ln["noise"])))))
+            eta = t + lead * _MIN_PER_DAY
+            po_index = len(self._po)
+            self._po.append((sku, to, delivered, 0.0))
+            self._transfer_po.add(po_index)
+            self.inv.in_transit[sku, to] += delivered
+            if self._transfer_visible_atp and delivered > 0:
+                self._inbound_sched.setdefault(sku, []).append([eta, delivered, to])
+            self.queue.push(eta, Ev.RECEIPT, -1, po_index)
+            weight = float(self.net.sku_weight[sku]) * qty
+            cost = ln["cost_per_unit"] * qty + ln["cost_per_kg"] * weight
+            if (fr, to) not in fixed_charged:
+                cost += ln["cost_per_shipment"]
+                fixed_charged.add((fr, to))
+            self.st_transfer_cost += cost
+            self.st_transfer_units += qty
+            rev = self._last_transfer_day.get((sku, to, fr))  # reverse within a 7-day window = ping-pong
+            if rev is not None and day - rev < 7:
+                self.st_ping_pong_units += qty
+            self._last_transfer_day[(sku, fr, to)] = day
+            self.journal.log(t, JType.TRANSFER_SHIPPED, sku=sku, warehouse=fr, parcel=to,
+                             qty=qty, cost=float(cost))
+
+    def _draw_lead_days(self, sku: int, wh: int, po_index: int) -> int:
+        """Supplier lead time for one PO. Deterministic when lead_time_std_days == 0 (so default
+        scenarios are byte-identical); otherwise a lognormal with the given mean and std, drawn
+        from the counter-based ``supplier_leadtime`` stream keyed by (sku, wh, po_index) so the
+        draw is reproducible and policy-independent (CRN, 6.1)."""
+        mean = float(self._supplier_lead)
+        std = self._supplier_lead_std
+        if std <= 0.0 or mean <= 0.0:
+            return int(self._supplier_lead)
+        g = make_generator(self.seed, "supplier_leadtime", (int(sku), int(wh), int(po_index)))
+        sigma2 = math.log(1.0 + (std / mean) ** 2)
+        mu = math.log(mean) - 0.5 * sigma2
+        draw = float(g.lognormal(mu, math.sqrt(sigma2)))
+        return max(1, int(round(draw)))
+
     def _on_receipt(self, t: int, po_index: int) -> None:
         sku, wh, qty, price = self._po[po_index]
+        is_transfer = po_index in self._transfer_po
+        # on_outage=hold: a transfer arriving at a downed warehouse waits until it is back up.
+        if is_transfer and self._transfer_on_outage == "hold" and self._outage_active(t) \
+                and wh == self._outage_wh:
+            self.queue.push(self._outage_end, Ev.RECEIPT, -1, po_index)
+            return
         # Inventory accuracy: with prob (1-accuracy) the record is overstated — physical arrives
         # short of book by a geometric error (mean error_mean). The gap is hidden until pick.
+        # Transfers move already-counted stock, so they carry no fresh accounting error.
         phys_add = qty
-        if self._inv_accuracy < 1.0:
+        if not is_transfer and self._inv_accuracy < 1.0:
             ge = make_generator(self.seed, "inventory_error", (int(sku), int(wh), po_index))
             if float(ge.random()) > self._inv_accuracy:
                 err = int(ge.geometric(1.0 / (1.0 + self._inv_err_mean)))
@@ -970,10 +1308,12 @@ class SimEngine:
         self.inv.book[sku, wh] += qty
         self.inv.phys[sku, wh] += phys_add
         self.inv.in_transit[sku, wh] -= qty
+        self._sync_credit(t, sku, wh, qty)  # the OMS sees the receipt only after the sync lag (2.12)
         self.st_purchase += float(qty * price)
         self.wh_inbound_tick[wh] += qty
         self.journal.log(
-            t, JType.RECEIVED, sku=sku, warehouse=wh, qty=qty, cost=float(qty * price)
+            t, JType.RECEIVED, sku=sku, warehouse=wh, qty=qty, cost=float(qty * price),
+            parcel=int(CancelPoint.TRANSFER) if is_transfer else -1,
         )
         # Drop this receipt from the inbound schedule.
         if self._track_inbound:
@@ -986,6 +1326,22 @@ class SimEngine:
         # Deferred sourcing: re-source parked orders waiting on this SKU.
         if self._defer_mode != "none":
             self._wake_waiters_for_sku(t, sku)
+
+    def _write_engine_extra(self, run_dir: Path) -> None:
+        """Sidecar stats the journal cannot carry: pick-shortage causes (2.12 cause split) and the
+        daily OMS/WMS divergence. metrics.compute reads this if present."""
+        import json
+
+        warm = self.cfg.warmup_days
+        div = [d["divergence_units"] for d in self._oms_divergence if d["day"] >= warm]
+        extra = {
+            "shortage_pick_causes": self.st_short_pick_cause,
+            "oms_wms_divergence_units_mean": float(np.mean(div)) if div else 0.0,
+            "customer_cancel_orders": self.st_customer_cancel,
+            "transfer_units": int(self.st_transfer_units),
+            "ping_pong_units": int(self.st_ping_pong_units),
+        }
+        (run_dir / "engine_extra.json").write_text(json.dumps(extra), encoding="utf-8")
 
     def _write_inventory_daily(self, run_dir: Path) -> None:
         if self._inv_daily:

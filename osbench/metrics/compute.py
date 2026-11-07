@@ -31,13 +31,17 @@ def compute_metrics(run_dir: str | Path, warmup_days: int = 0) -> dict:
     created = rows(JType.ORDER_CREATED)
 
     late_pen = rows(JType.LATE_PENALTY)
+    transfers = rows(JType.TRANSFER_SHIPPED)
     n_orders = created.height
     shipping_cost = float(shipped["cost"].sum() or 0.0)
     holding_cost = float(holding["cost"].sum() or 0.0)
     purchase_cost = float(received["cost"].sum() or 0.0)
     penalty_cost = float(lost["cost"].sum() or 0.0)
     lateness_penalty_cost = float(late_pen["cost"].sum() or 0.0)
-    total_cost = shipping_cost + holding_cost + purchase_cost + penalty_cost + lateness_penalty_cost
+    transfer_cost = float(transfers["cost"].sum() or 0.0)  # inter-warehouse rebalancing (2.13)
+    transfer_units = int(transfers["qty"].sum() or 0)
+    total_cost = (shipping_cost + holding_cost + purchase_cost + penalty_cost
+                  + lateness_penalty_cost + transfer_cost)
 
     # On-time rate: parcels with delivered_at <= promised_at.
     on_time_rate = None
@@ -93,6 +97,10 @@ def compute_metrics(run_dir: str | Path, warmup_days: int = 0) -> dict:
     shortage_rate_post_order = by_stage.get(2, 0) / denom if denom else None
     shortage_rate_pick = by_stage.get(3, 0) / denom if denom else None
     substituted_lines = rows(JType.SUBSTITUTED).height
+    # Customer-initiated cancellations: one event per abandoned order. Not a lost sale (the
+    # demand withdrew itself), so it is reported separately and excluded from lost_sales_rate.
+    customer_cancelled = rows(JType.CUSTOMER_CANCELLED).height
+    customer_cancel_rate = customer_cancelled / n_orders if n_orders else None
 
     result = {
         "n_orders": n_orders,
@@ -111,6 +119,10 @@ def compute_metrics(run_dir: str | Path, warmup_days: int = 0) -> dict:
         "split_rate": split_rate,
         "avg_parcels_per_order": avg_parcels,
         "lost_sales_rate": lost_sales_rate,
+        "customer_cancel_rate": customer_cancel_rate,
+        "transfer_cost": transfer_cost,
+        "transfer_units": transfer_units,
+        "transfer_share": (transfer_units / delivered_lines if delivered_lines else 0.0),
         "promise_rejection_rate": promise_rejection_rate,
         "deferred_share": deferred_share,
         "shortage_rate_checkout": shortage_rate_checkout,
@@ -121,6 +133,18 @@ def compute_metrics(run_dir: str | Path, warmup_days: int = 0) -> dict:
         "decision_time_ms_p50": decision_p50,
         "decision_time_ms_p99": decision_p99,
     }
+    # Engine sidecar (2.12): pick-shortage cause split and the OMS/WMS snapshot divergence.
+    extra_path = run_dir / "engine_extra.json"
+    if extra_path.exists():
+        extra = json.loads(extra_path.read_text(encoding="utf-8"))
+        causes = extra.get("shortage_pick_causes", {})
+        result["shortage_pick_causes"] = causes
+        pick_total = sum(causes.values()) or 1
+        result["shortage_pick_stale_snapshot_share"] = (
+            causes.get("stale_snapshot", 0) / pick_total
+        )
+        result["oms_wms_divergence_units"] = extra.get("oms_wms_divergence_units_mean", 0.0)
+        result["ping_pong_units"] = extra.get("ping_pong_units", 0)
     return result
 
 

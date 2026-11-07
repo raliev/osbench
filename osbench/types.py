@@ -24,6 +24,8 @@ class CancelPoint(IntEnum):
     POST_ORDER = 2
     PICK = 3
     HORIZON = 4  # still in the pipeline when the run ended (overloaded network)
+    CUSTOMER = 5  # customer cancelled the order before it was fulfilled
+    TRANSFER = 6  # marker on RECEIVED events for inbound stock that came via a transfer (2.13)
 
 
 class DeferReason(StrEnum):
@@ -79,6 +81,33 @@ class Assignment:
     @property
     def n_parcels(self) -> int:
         return len({a.warehouse_id for a in self.lines})
+
+
+@dataclass(frozen=True, slots=True)
+class Transfer:
+    """A transfer policy's decision to move stock along a lane (2.13)."""
+
+    sku_id: int
+    from_wh: int
+    to_wh: int
+    qty: int
+
+
+@dataclass
+class TransferContext:
+    """State a transfer policy sees each review (2.13). Arrays are [n_sku, n_wh] views.
+
+    ``lanes`` maps (from_wh, to_wh) → remaining units the lane can still carry this period.
+    """
+
+    now_day: int
+    snapshot: np.ndarray       # OMS stock view (= book when sync off)
+    reserved: np.ndarray
+    in_transit: np.ndarray     # inbound (supplier + transfer) not yet received
+    safety_stock: np.ndarray
+    demand_rate: np.ndarray    # [n_sku, n_wh] realized units/day so far
+    lanes: dict[tuple[int, int], int]
+    params: dict
 
 
 @dataclass(frozen=True, slots=True)

@@ -52,12 +52,14 @@ def validate(run_dir: str | Path) -> dict:
                 )
 
     # 2. Every created order is either delivered or fully lost (no "stuck" orders).
+    cancelled = ev.filter(pl.col("type") == int(JType.CUSTOMER_CANCELLED))
     created_ids = set(created["order_id"].to_list())
     delivered_ids = set(delivered["order_id"].to_list())
     lost_ids = set(lost["order_id"].to_list())
-    stuck = created_ids - delivered_ids - lost_ids
+    cancelled_ids = set(cancelled["order_id"].to_list())
+    stuck = created_ids - delivered_ids - lost_ids - cancelled_ids
     if stuck:
-        violations.append(f"stuck orders (neither delivered nor lost): {len(stuck)}")
+        violations.append(f"stuck orders (neither delivered, lost, nor cancelled): {len(stuck)}")
 
     # 3. No negative daily stock balances (from inventory_daily).
     inv_path = run_dir / "inventory_daily.parquet"

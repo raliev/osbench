@@ -36,8 +36,9 @@ def test_orders_structure(tmp_path):
     o = pd.read_parquet(run / "orders.parquet")
     assert set(o.columns) == {
         "order_id", "line_id", "region_id", "created_min",
-        "dest_x", "dest_y", "sku_id", "qty",
+        "dest_x", "dest_y", "sku_id", "qty", "cancel_at_min",
     }
+    assert (o["cancel_at_min"] == -1).all()  # default cancel_rate=0 → no cancellations
     assert (o.groupby("order_id").line_id.min() == 0).all()
     assert o.groupby("order_id").created_min.first().is_monotonic_increasing
     assert o.qty.min() >= 1

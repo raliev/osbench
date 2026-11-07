@@ -48,6 +48,11 @@ spillover_limit = "osbench.policies.sourcing.spillover_limit_policy:SpilloverLim
 rolling_milp = "osbench.policies.sourcing.rolling_milp_policy:RollingMILPPolicy"
 broken_wh0 = "osbench.policies.sourcing._demo:BrokenWh0Policy"
 
+[project.entry-points."osbench.policies.transfer"]
+none = "osbench.policies.transfer.none_policy:NoneTransferPolicy"
+threshold_balance = "osbench.policies.transfer.threshold_balance_policy:ThresholdBalancePolicy"
+pull_base_stock = "osbench.policies.transfer.pull_base_stock_policy:PullBaseStockPolicy"
+
 [project.entry-points."osbench.policies.replenishment"]
 base_stock = "osbench.policies.replenishment.base_stock_policy:BaseStockPolicy"
 s_S = "osbench.policies.replenishment.s_S_policy:SsSPolicy"

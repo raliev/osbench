@@ -6,7 +6,7 @@ so the config is the deterministic source of truth for a run and hashes correctl
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -42,6 +42,7 @@ class WarehouseConfig(BaseModel):
     storage_cost_per_unit_day: float = Field(default=0.01, ge=0)
     cutoff_min: int = Field(default=16 * 60, ge=0, le=1440)  # cut-off time of day (min)
     assortment_fraction: float = Field(default=1.0, gt=0, le=1)
+    tier: Literal["fdc", "rdc"] = "fdc"  # forward vs regional DC; hub transfer topology is rdc→fdc
 
 
 class TariffConfig(BaseModel):
@@ -102,6 +103,13 @@ class DemandConfig(BaseModel):
     intraday_profile: tuple[float, ...] | None = None  # 24 hours; None → uniform
     lines_per_order_mean: float = Field(default=1.6, gt=1.0)  # geometric
     qty_max: int = Field(default=3, ge=1)
+    # Customer-initiated cancellation: a fraction of orders are abandoned by the customer
+    # after creation but before fulfillment, at a time drawn uniformly in [0, cancel_within_hours]
+    # after creation. Pre-generated into the order stream (CRN-stable). This is the real
+    # argument against early binding: a reserved unit held for a to-be-cancelled order is a
+    # unit nobody else could buy in the meantime.
+    cancel_rate: float = Field(default=0.0, ge=0, le=1)
+    cancel_within_hours: float = Field(default=24.0, gt=0)
 
     @model_validator(mode="after")
     def _profiles(self):
@@ -146,6 +154,24 @@ class InventoryAccuracyConfig(BaseModel):
     error_mean: float = Field(default=2.0, gt=0)  # geometric mean of the book-keeping error
 
 
+class InventorySyncConfig(BaseModel):
+    """Stock-sync latency (2.12): OMS sees the WMS book stock through a delayed snapshot.
+
+    Distinct from inventory_accuracy (the WMS itself being wrong): here the WMS is exact but
+    the OMS snapshot read by sourcing/ATP lags behind WMS debits (picks) and credits (receipts).
+    mode=none keeps the OMS reading the live book, so the journal is byte-identical to before.
+    """
+
+    model_config = _Cfg
+    mode: Literal["none", "fixed_lag", "periodic"] = "none"
+    lag_minutes: int = Field(default=0, ge=0)  # fixed_lag: delay before a WMS event reaches OMS
+    period_minutes: int = Field(default=15, gt=0)  # periodic: batch snapshot refresh interval
+    jitter_minutes: int = Field(default=0, ge=0)  # random extra delay (stream sync_jitter)
+    lagged_events: Literal["picks", "receipts", "all"] = "all"
+    # Per-warehouse override of the effective lag/period (e.g. RDCs 0, stores 60).
+    per_warehouse: dict[int, int] | None = None
+
+
 class PromiseConfig(BaseModel):
     model_config = _Cfg
     method: Literal["zone_fixed", "transit_plus_buffer", "atp_based", "percentile"] = (
@@ -167,6 +193,50 @@ class DeferralConfig(BaseModel):
     max_waiting_per_sku: int = Field(default=1000, ge=0)
     safety_margin_days: float = Field(default=0.5, ge=0)
     penalty_deferral_miss: float = Field(default=2.0, ge=0)
+
+
+class LaneConfig(BaseModel):
+    """A directed warehouse→warehouse transfer lane (2.13). Any field left None falls back to a
+    default (lead time by the inter-warehouse zone; costs/limits from the parent TransfersConfig)."""
+
+    model_config = _Cfg
+    from_wh: int = Field(ge=0)
+    to_wh: int = Field(ge=0)
+    lead_time_days: int | None = None  # None → derived from the inter-warehouse distance zone
+    lead_time_noise_days: float = Field(default=0.0, ge=0)
+    cost_per_unit: float = Field(default=0.0, ge=0)
+    cost_per_shipment: float = Field(default=0.0, ge=0)  # fixed per lane per day ("a truck")
+    cost_per_kg: float = Field(default=0.0, ge=0)
+    capacity_units_per_day: int | None = None  # None → unlimited
+    moq_units: int = Field(default=0, ge=0)
+    fill_rate: float = Field(default=1.0, ge=0, le=1)
+
+
+class TransferGuardsConfig(BaseModel):
+    """Anti-oscillation guards shared by every transfer policy (2.13)."""
+
+    model_config = _Cfg
+    min_qty: int = Field(default=1, ge=0)
+    max_source_share: float = Field(default=0.5, ge=0, le=1)  # of source available stock per period
+    cooldown_days: int = Field(default=7, ge=0)  # no reverse move of the same SKU on the same lane
+    max_transfer_share: float = Field(default=1.0, ge=0)  # guardrail on transferred/sold
+
+
+class TransfersConfig(BaseModel):
+    """Inter-warehouse rebalancing (2.13). Disabled by default, so no lane exists and the
+    journal is byte-identical to a run without transfers."""
+
+    model_config = _Cfg
+    enabled: bool = False
+    topology: Literal["all_pairs", "hub", "explicit"] = "all_pairs"
+    policy: str = "none"
+    review_days: int = Field(default=1, ge=1)
+    protect_safety: bool = True  # a source never ships below its safety stock
+    visible_to_atp: bool = True  # in-transit transfers count in the receiver's cumulative ATP
+    on_outage: Literal["hold", "redirect"] = "hold"  # a downed warehouse does not send; inbound waits
+    lanes: tuple[LaneConfig, ...] = ()  # explicit lanes, or per-pair overrides for all_pairs/hub
+    guards: TransferGuardsConfig = TransferGuardsConfig()
+    params: dict[str, Any] = Field(default_factory=dict)  # policy knobs (low_days/high_days/...)
 
 
 class ProcessTimesConfig(BaseModel):
@@ -219,9 +289,11 @@ class ScenarioConfig(BaseModel):
     reservation: ReservationConfig = ReservationConfig()
     atp: AtpConfig = AtpConfig()
     inventory_accuracy: InventoryAccuracyConfig = InventoryAccuracyConfig()
+    inventory_sync: InventorySyncConfig = InventorySyncConfig()
     promise: PromiseConfig = PromiseConfig()
     deferral: DeferralConfig = DeferralConfig()
     shortage: ShortageConfig = ShortageConfig()
+    transfers: TransfersConfig = TransfersConfig()
     process_times: ProcessTimesConfig = ProcessTimesConfig()
     ship_when_ready: bool = True
     initial_cover_days: int = Field(default=14, ge=0)

@@ -20,6 +20,9 @@ class InventoryState:
     safety: np.ndarray
     s_level: np.ndarray
     S_level: np.ndarray
+    # OMS snapshot of book stock (2.12). Equal to book unless inventory_sync lags it. Policies
+    # and ATP read this, never `book` directly, so sync latency is a single switch in the engine.
+    snapshot: np.ndarray = None  # type: ignore[assignment]
 
     def atp(self) -> np.ndarray:
         """ATP basic = book − reserved − safety (>=0)."""
@@ -72,4 +75,5 @@ def init_inventory(
         safety=safety,
         s_level=s_level,
         S_level=S_level,
+        snapshot=book.copy(),
     )

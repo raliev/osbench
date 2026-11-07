@@ -28,6 +28,8 @@ class JType(IntEnum):
     PROMISE_REJECTED = 13  # order refused at checkout because the promise was too long
     DEFERRED = 14  # order parked under deferred sourcing, waiting for inbound stock / deadline
     SUBSTITUTED = 15  # a checkout line was swapped for an in-stock SKU of the same category
+    CUSTOMER_CANCELLED = 16  # order abandoned by the customer before fulfillment (not a lost sale)
+    TRANSFER_SHIPPED = 17  # inter-warehouse rebalancing move dispatched (2.13)
 
 
 JTYPE_NAMES = {int(j): j.name.lower() for j in JType}

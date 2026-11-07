@@ -13,6 +13,7 @@ from enum import IntEnum
 class Ev(IntEnum):
     DAY_ROLL = 0
     RECEIPT = 1  # PO receipt before new orders in the same minute
+    CUSTOMER_CANCEL = 2  # customer walks away before fulfillment; fires before this order's sourcing
     SOURCING_DECISION = 3
     RESERVE = 4
     WH_QUEUE_ADMIT = 5
@@ -26,6 +27,7 @@ class Ev(IntEnum):
     REPLENISH_REVIEW = 13
     CHECKPOINT = 14
     LIVE_TICK = 15
+    SYNC_APPLY = 16  # a delayed WMS event (pick debit / receipt credit) reaches the OMS snapshot
     SIM_END = 99
 
 

@@ -17,8 +17,10 @@ _T = TypeVar("_T")
 
 _SOURCING: dict[str, type] = {}
 _REPLENISHMENT: dict[str, type] = {}
+_TRANSFER: dict[str, type] = {}
 _EP_SOURCING: dict[str, EntryPoint] = {}
 _EP_REPLENISHMENT: dict[str, EntryPoint] = {}
+_EP_TRANSFER: dict[str, EntryPoint] = {}
 _EP_DISCOVERED = False
 
 
@@ -44,6 +46,17 @@ def register_replenishment(name: str):
     return deco
 
 
+def register_transfer(name: str):
+    def deco(cls: type[_T]) -> type[_T]:
+        if name in _TRANSFER and _TRANSFER[name] is not cls:
+            raise ValueError(f"duplicate transfer policy registration: {name!r}")
+        cls.name = name  # type: ignore[attr-defined]
+        _TRANSFER[name] = cls
+        return cls
+
+    return deco
+
+
 def _discover_entry_points() -> None:
     """Collect EntryPoint objects (without importing modules), idempotently."""
     global _EP_DISCOVERED
@@ -52,6 +65,7 @@ def _discover_entry_points() -> None:
     for group, table in (
         ("osbench.policies.sourcing", _EP_SOURCING),
         ("osbench.policies.replenishment", _EP_REPLENISHMENT),
+        ("osbench.policies.transfer", _EP_TRANSFER),
     ):
         for ep in entry_points(group=group):
             table.setdefault(ep.name, ep)
@@ -78,6 +92,22 @@ def get_replenishment(name: str) -> type:
         _REPLENISHMENT[name] = cls
         return cls
     raise KeyError(f"unknown replenishment policy {name!r}; available: {list_replenishment()}")
+
+
+def get_transfer(name: str) -> type:
+    if name in _TRANSFER:
+        return _TRANSFER[name]
+    _discover_entry_points()
+    if name in _EP_TRANSFER:
+        cls = _EP_TRANSFER[name].load()
+        _TRANSFER[name] = cls
+        return cls
+    raise KeyError(f"unknown transfer policy {name!r}; available: {list_transfer()}")
+
+
+def list_transfer() -> list[str]:
+    _discover_entry_points()
+    return sorted(set(_TRANSFER) | set(_EP_TRANSFER))
 
 
 def list_sourcing() -> list[str]:
