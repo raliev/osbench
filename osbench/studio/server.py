@@ -70,6 +70,16 @@ def build_app(configs_dir: Path, runs_dir: Path = Path("runs")) -> FastAPI:
         body = orjson.loads(await req.body())
         return _json(cfgio.validate_config(body))
 
+    @app.post("/api/validate_advanced")
+    async def validate_advanced(req: Request) -> Response:
+        body = orjson.loads(await req.body())
+        return _json(cfgio.validate_advanced_yaml(body.get("yaml", "")))
+
+    @app.post("/api/advanced_yaml")
+    async def advanced_yaml(req: Request) -> Response:
+        body = orjson.loads(await req.body())
+        return _json(cfgio.advanced_yaml(body.get("config", body)))
+
     @app.post("/api/preview")
     async def do_preview(req: Request) -> Response:
         body = orjson.loads(await req.body())

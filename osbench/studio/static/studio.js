@@ -35,6 +35,8 @@ const SECTIONS = [
     { path: "demand.lines_per_order_mean", label: "avg lines / order", type: "range", min: 1.05, max: 6, step: 0.05 },
     { path: "demand.qty_max", label: "max qty / line", type: "range", min: 1, max: 10, step: 1, int: true },
     { path: "demand.seasonality_amplitude", label: "seasonality", type: "range", min: 0, max: 1, step: 0.05 },
+    { path: "demand.cancel_rate", label: "customer cancel rate", type: "range", min: 0, max: 0.5, step: 0.01 },
+    { path: "demand.cancel_within_hours", label: "cancel window (h)", type: "range", min: 1, max: 72, step: 1 },
   ]},
   { title: "Catalog (SKU)", fields: [
     { path: "sku.n_sku", label: "number of SKUs", type: "range", min: 10, max: 5000, step: 10, int: true },
@@ -179,6 +181,9 @@ const PARAM_HELP = {
   "shocks.enabled": "Enable scenario shocks (demand peak and/or a warehouse outage) defined below.",
   "shocks.peak_multiplier": "Demand multiplier during the peak window (e.g. 4× for 3 days).",
   "shocks.peak_duration_days": "How many days the demand peak lasts.",
+  "demand.cancel_rate": "Fraction of orders the customer abandons before fulfillment (2.9+). With reservation on, a reserved unit is held for an order that then cancels — the argument against early binding.",
+  "demand.cancel_within_hours": "A cancelling customer cancels at a uniform time within this many hours after ordering.",
+  "suppliers.lead_time_std_days": "Std dev of the supplier lead time (lognormal). 0 = deterministic lead; >0 makes receipts late and jittery.",
 };
 
 // Descriptions of the sourcing / replenishment policies, shown by the (i) next to Run.
@@ -334,9 +339,11 @@ function renderSections() {
              x: 500, y: 500, population_weight: 1.0 })));
   root.appendChild(tableSection("Suppliers", "suppliers",
     [["name", "name", "text"], ["unit_price", "price", "num"], ["moq", "moq", "num"],
-     ["lead_time_days", "lead", "num"], ["capacity_per_period", "cap/period", "num"]],
+     ["lead_time_days", "lead", "num"], ["lead_time_std_days", "lead σ", "num"],
+     ["capacity_per_period", "cap/period", "num"]],
     () => ({ supplier_id: cfg.suppliers.length, name: "S" + cfg.suppliers.length,
-             unit_price: 10, moq: 10, lead_time_days: 7, capacity_per_period: 200000 })));
+             unit_price: 10, moq: 10, lead_time_days: 7, lead_time_std_days: 0,
+             capacity_per_period: 200000 })));
 }
 
 function tableSection(title, key, cols, mkRow) {
@@ -658,6 +665,57 @@ async function validate() {
   const el = document.getElementById("validation");
   if (res.ok) { el.className = "ok"; el.textContent = "✓ valid"; }
   else { el.className = "errs"; el.textContent = res.errors.map(e => `${e.loc}: ${e.msg}`).join("\n"); }
+}
+
+// --------------------------------------------- advanced YAML popup (2.12 / 2.13)
+let advParsed = null;  // last validated {inventory_sync?, transfers?} ready to apply
+
+async function openAdvanced() {
+  if (!cfg) return;
+  const ta = document.getElementById("adv-yaml");
+  const status = document.getElementById("adv-status");
+  status.className = "muted"; status.textContent = "";
+  document.getElementById("adv-apply").disabled = true;
+  advParsed = null;
+  ta.value = "# loading…";
+  const r = await fetch("/api/advanced_yaml", { method: "POST", body: JSON.stringify({ config: cfg }) });
+  ta.value = (await r.json()).yaml;
+  document.getElementById("adv-overlay").style.display = "flex";
+  ta.focus();
+}
+
+function closeAdvanced() { document.getElementById("adv-overlay").style.display = "none"; }
+
+function wireAdvancedModal() {
+  const status = document.getElementById("adv-status");
+  const applyBtn = document.getElementById("adv-apply");
+  document.getElementById("adv-cancel").onclick = closeAdvanced;
+  document.getElementById("adv-overlay").addEventListener("click", (e) => {
+    if (e.target.id === "adv-overlay") closeAdvanced();   // click outside the dialog closes it
+  });
+  document.getElementById("adv-validate").onclick = async () => {
+    const yaml = document.getElementById("adv-yaml").value;
+    const res = await (await fetch("/api/validate_advanced", { method: "POST", body: JSON.stringify({ yaml }) })).json();
+    if (res.ok) {
+      advParsed = res.parsed || {};
+      const blocks = Object.keys(advParsed);
+      status.className = "ok";
+      status.textContent = blocks.length ? "✓ valid — will update: " + blocks.join(", ") : "✓ valid — no blocks set (no change)";
+      applyBtn.disabled = false;
+    } else {
+      advParsed = null; applyBtn.disabled = true;
+      status.className = "errs"; status.textContent = "✗ " + res.error;
+    }
+  };
+  applyBtn.onclick = () => {
+    if (!advParsed) return;
+    for (const k of Object.keys(advParsed)) cfg[k] = advParsed[k];  // absent blocks stay unchanged
+    markDirty(); schedule();
+    closeAdvanced();
+    const v = document.getElementById("validation");
+    const blocks = Object.keys(advParsed);
+    if (blocks.length) { v.className = "ok"; v.textContent = "✓ applied advanced: " + blocks.join(", "); }
+  };
 }
 
 // ----------------------------------------------------------------- load / actions
@@ -1146,6 +1204,8 @@ async function init() {
   document.getElementById("mi-run-gen").onclick = () => { menu.style.display = "none"; runOverGenerated(); };
   document.getElementById("btn-sourcing-help").onclick = () => showPolicyHelp("sourcing");
   document.getElementById("btn-replenishment-help").onclick = () => showPolicyHelp("replenishment");
+  document.getElementById("btn-advanced").onclick = openAdvanced;
+  wireAdvancedModal();
   document.getElementById("rm-stop").onclick = stopRun;
   // Tabs.
   document.querySelectorAll(".tab").forEach(t => t.onclick = () => showTab(t.dataset.tab));
