@@ -66,6 +66,26 @@ def paired_ci(
     return out
 
 
+def holm_adjust(p_values, ci_level: float = 0.95) -> dict:
+    """Holm step-down correction for a family of p-values.
+
+    Returns adjusted p-values (monotone, capped at 1.0) and a rejection flag at
+    ``1 - ci_level``. NaN p-values pass through as NaN and are never rejected, but they
+    are excluded from the family size rather than inflating it.
+    """
+    p = np.asarray(p_values, dtype=np.float64)
+    adj = np.full(p.shape, np.nan)
+    finite = np.nonzero(~np.isnan(p))[0]
+    m = finite.size
+    if m:
+        order = finite[np.argsort(p[finite], kind="stable")]
+        running = 0.0
+        for rank, i in enumerate(order):
+            running = max(running, (m - rank) * p[i])  # step-down monotonicity
+            adj[i] = min(1.0, running)
+    return {"p_adj": adj, "reject": np.where(np.isnan(adj), False, adj < (1.0 - ci_level))}
+
+
 def pareto_front(points: np.ndarray) -> np.ndarray:
     """Indices of non-dominated points for minimization on both axes (cost, -on_time)."""
     n = points.shape[0]

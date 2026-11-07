@@ -22,6 +22,10 @@ _METRIC_KEYS = [
     "promise_hit_rate", "lateness_days_p90", "split_rate", "avg_parcels_per_order",
     "lost_sales_rate", "decision_time_ms_p50", "decision_time_ms_p99",
     "gap_to_hindsight", "hindsight_per_order",
+    # Explanatory: where the lost lines and the waiting come from.
+    "promise_rejection_rate", "deferred_share", "customer_cancel_rate",
+    "shortage_rate_checkout", "shortage_rate_post_order", "shortage_rate_pick",
+    "transfer_cost", "transfer_units", "transfer_share",
 ]
 
 

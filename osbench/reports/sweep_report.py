@@ -11,13 +11,11 @@ import plotly.graph_objects as go
 from ..metrics.compare import compare_sweep
 
 _DARK = dict(paper_bgcolor="#161b22", plot_bgcolor="#161b22", font=dict(color="#e6edf3"))
-_KNOWN = {
-    "scenario", "policy", "seed", "replenishment", "error", "n_orders",
-    "total_cost_per_order", "shipping_cost_per_order", "holding_cost", "purchase_cost",
-    "penalty_cost", "promise_hit_rate", "lateness_days_p90", "split_rate",
-    "avg_parcels_per_order", "lost_sales_rate", "decision_time_ms_p50",
-    "decision_time_ms_p99", "gap_to_hindsight", "hindsight_per_order",
-}
+from ..experiments.sweep import _METRIC_KEYS
+
+# Everything in a sweep table that is NOT a grid axis. Derived from the sweep's own metric
+# list so that adding a metric there cannot silently turn it into a phantom axis here.
+_KNOWN = {"scenario", "policy", "seed", "replenishment", "error", *_METRIC_KEYS}
 _PALETTE = ["#2f81f7", "#3fb950", "#d29922", "#f85149", "#a371f7", "#8957e5", "#db61a2"]
 
 
